@@ -1,6 +1,6 @@
 # 🤖 find_job_in_www_bot — Telegram-бот для формирования резюме и поиска работы
 
-[![Python CI](https://github.com/andrey9653246431-spec/find_job_in_www_bot/actions/workflows/ci.yml/badge.svg)](https://github.com/andrey9653246431-spec/find_job_in_www_bot/actions)
+[![Unpack & Tests](https://github.com/andrey9653246431-spec/find_job_in_www_bot/actions/workflows/unpack_zip.yml/badge.svg)](https://github.com/andrey9653246431-spec/find_job_in_www_bot/actions)
 
 Репозиторий проекта: **[andrey9653246431-spec/find_job_in_www_bot](https://github.com/andrey9653246431-spec/find_job_in_www_bot)**
 
@@ -130,7 +130,7 @@
 | Парсинг ТГ-каналов и сайтов | `aiohttp` + `BeautifulSoup4` + `t.me/s/...` + `api.hh.ru` | Бесплатно (без Userbot SIM и платных прокси) |
 | Обработка и генерация документов | `pypdf` (PDF) + `python-docx` (DOCX) | Бесплатно (Open Source) |
 | Адаптация резюме | Встроенный ATS/STAR-движок + опционально Groq Free Tier / Ollama | Бесплатно |
-| CI/CD и автотесты | `pytest` + `GitHub Actions` (`.github/workflows/ci.yml`) | Бесплатно на GitHub |
+| CI/CD и автотесты | `pytest` + `GitHub Actions` (`.github/workflows/unpack_zip.yml`) | Бесплатно на GitHub |
 
 ---
 
@@ -145,7 +145,7 @@
 ├── docker-compose.yml         # Запуск в контейнере
 ├── .github/
 │   └── workflows/
-│       └── ci.yml             # Бесплатный CI/CD пайплайн GitHub Actions (автотесты)
+│       └── unpack_zip.yml     # Распаковка архива, автотесты и авто-коммит в ветку
 ├── main.py                    # Точка входа Telegram-бота
 ├── bot/
 │   ├── config.py              # Загрузка настроек из .env
@@ -166,6 +166,16 @@
 └── tests/
     └── test_bot_services.py   # Модульные и интеграционные тесты (pytest)
 ```
+
+---
+
+## 🔁 Обновление файлов через GitHub Actions
+
+1. Скачайте `find_job_in_www_bot.zip` и загрузите его в корень репозитория (**Add file → Upload files**, коммит в `main`).
+2. Workflow **«Unpack ZIP Archive & Run Tests (CI)»** автоматически: распакует архив → прогонит `pytest` → закоммитит файлы в `main` → удалит архив.
+3. Проверить результат: вкладка **Actions** (последний запуск должен быть ✅) и корень репозитория (появились `bot/services/search_assistant.py`, `examples/` и т.д.).
+
+**Если запуск упал на шаге «Commit and push»** — это гонка двух одновременных запусков (второй push отклоняется как *non-fast-forward*). В актуальной версии workflow это исправлено: добавлены `concurrency: unpack-<ref>` и повторный push с синхронизацией (`fetch` + `reset` + retry). Так как `GITHUB_TOKEN` не имеет права изменять файлы внутри `.github/workflows/`, обновить сам workflow нужно один раз вручную: **Actions → Unpack ZIP Archive & Run Tests (CI) → ⋯ → View file → ✏️ Edit** и вставить содержимое [`.github/workflows/unpack_zip.yml`](.github/workflows/unpack_zip.yml).
 
 ---
 
