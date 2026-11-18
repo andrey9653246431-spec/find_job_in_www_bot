@@ -1257,3 +1257,174 @@ async def test_long_search_result_is_sent_in_safe_chunks() -> None:
         assert not has_broken_entities(text)
         if kwargs.get("parse_mode") == "Markdown":
             assert has_broken_entities(text) is False
+
+
+# =============================================================================
+# Извлечение должности из резюме (полное название, а не первое слово)
+# =============================================================================
+
+def test_role_extraction_keeps_full_title() -> None:
+    """Тест 28: «Руководитель продукта» не обрезается до «Руководитель»."""
+    from bot.services.file_extractor import extract_role_from_resume
+
+    cases = {
+        "Руководитель продукта": "Руководитель продукта",
+        "Менеджер проектов": "Менеджер проектов",
+        "Начальник цеха": "Начальник цеха",
+        "Главный инженер проекта": "Главный инженер проекта",
+        "Старший аналитик данных": "Старший аналитик данных",
+        "Руководитель отдела продаж": "Руководитель отдела продаж",
+        "Директор по маркетингу": "Директор по маркетингу",
+        "Руководитель направления логистики": "Руководитель направления логистики",
+        "Инженер-программист отдела АСУ": "Инженер-программист отдела АСУ",
+        "Ведущий специалист по работе с клиентами": "Ведущий специалист по работе с клиентами",
+        "Руководитель продукта в Яндексе": "Руководитель продукта",
+        "Аналитик данных, финансы": "Аналитик данных",
+        "Специалист с опытом работы 5 лет": "Специалист",
+    }
+    for resume_line, expected in cases.items():
+        actual = extract_role_from_resume(resume_line)
+        assert actual == expected, f"{resume_line!r} → {actual!r}, ожидалось {expected!r}"
+
+
+def test_role_extraction_abbreviations_and_english_titles() -> None:
+    """Тест 29: C-level аббревиатуры и англоязычные должности распознаются."""
+    from bot.services.file_extractor import extract_role_from_resume, is_probable_person_name
+
+    assert extract_role_from_resume("CTO").startswith("CTO")
+    assert extract_role_from_resume("CFO").startswith("CFO")
+    assert extract_role_from_resume("Product Owner") == "Product Owner"
+    assert extract_role_from_resume("Scrum Master") == "Scrum Master"
+    assert extract_role_from_resume("Head of Marketing") == "Head of Marketing"
+
+    # и при этом они не считаются ФИО
+    for title in ("Product Owner", "Scrum Master", "Product Management", "Unit Economics"):
+        assert not is_probable_person_name(title), title
+    for name in ("Иванов Иван Иванович", "Анна Смирнова", "Peter Parker"):
+        assert is_probable_person_name(name), name
+
+
+def test_names_are_never_roles_and_skills() -> None:
+    """Тест 30: ФИО не попадает ни в должность, ни в навыки."""
+    from bot.services.file_extractor import (
+        extract_role_from_resume,
+        extract_skills_from_resume,
+        build_resume_profile,
+    )
+
+    resume = (
+        "Иванов Иван Иванович\n"
+        "Москва\n\n"
+        "Навыки\n"
+        "Product Management, Unit Economics, P&L, SQL, Jira\n"
+    )
+    profile = build_resume_profile(resume)
+    assert profile["role"] == ""
+    assert profile["candidate_name"] == "Иванов Иван Иванович"
+    assert "Иванов" not in " ".join(profile["skills"])
+    assert "Product Management" in profile["skills"]
+    assert extract_role_from_resume("Руководитель продукта\n" + resume) == "Руководитель продукта"
+
+
+@pytest.mark.asyncio
+async def test_uploaded_docx_resume_role_is_full(db: Database) -> None:
+    """Тест 31: при загрузке DOCX-резюме в профиль попадает полная должность."""
+    import io
+
+    from docx import Document
+
+    from bot.services.file_extractor import extract_text_from_file_bytes, upload_and_register_resume
+
+    text = (
+        "Иванов Иван Иванович\n"
+        "Руководитель продукта\n"
+        "Москва, готов к релокации\n\n"
+        "О себе\n8 лет в продуктовой разработке, управлял P&L продукта.\n\n"
+        "Навыки\nProduct Management, Unit Economics, P&L, SQL, Jira, Roadmap\n"
+    )
+    document = Document()
+    for line in text.splitlines():
+        document.add_paragraph(line)
+    buffer = io.BytesIO()
+    document.save(buffer)
+
+    extracted = extract_text_from_file_bytes(buffer.getvalue(), "resume.docx")
+    profile = await upload_and_register_resume(
+        db=db, user_id=501, raw_text=extracted, file_name="resume.docx"
+    )
+
+    assert profile["extracted_role"] == "Руководитель продукта"
+    assert "Product Management" in profile["extracted_skills"]
+
+    stored = await db.get_resume(501)
+    assert stored is not None
+    assert stored["extracted_role"] == "Руководитель продукта"
+
+
+@pytest.mark.asyncio
+async def test_truncated_role_is_repaired_on_startup(db: Database) -> None:
+    """Тест 32: сохранённая обрезанная должность «Руководитель» чинится при старте бота."""
+    from bot.services.file_extractor import is_truncated_role, repair_invalid_resume_profiles
+
+    raw = (
+        "Иванов Иван Иванович\n"
+        "Руководитель продукта\n"
+        "Москва\n\n"
+        "Навыки\nProduct Management, SQL\n"
+    )
+    await db.save_resume(
+        user_id=888,
+        raw_text=raw,
+        extracted_role="Руководитель",
+        extracted_skills=["SQL"],
+    )
+    assert is_truncated_role("Руководитель") is True
+    assert is_truncated_role("Руководитель продукта") is False
+
+    repaired = await repair_invalid_resume_profiles(db)
+    assert repaired >= 1
+
+    record = await db.get_resume(888)
+    assert record is not None
+    assert record["extracted_role"] == "Руководитель продукта"
+
+
+@pytest.mark.asyncio
+async def test_hh_api_block_is_reported_not_silent() -> None:
+    """Тест 33: блокировка API hh.ru (403) попадает в предупреждения, а не теряется."""
+    from datetime import datetime, timezone
+
+    from bot.services.vacancy_parser import _fetch_hh_api_vacancies
+
+    class _Resp:
+        status = 403
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def json(self):
+            return {"errors": [{"type": "forbidden"}]}
+
+        async def text(self, errors="ignore"):
+            return ""
+
+    class _Session:
+        def get(self, *args, **kwargs):
+            return _Resp()
+
+    issues: list = []
+    result = await _fetch_hh_api_vacancies(
+        session=_Session(),  # type: ignore[arg-type]
+        source={"canonical_url": "https://hh.ru", "title": "Сайт: HeadHunter (hh.ru API)"},
+        role="Руководитель продукта",
+        skills=["SQL"],
+        period_days=7,
+        cutoff_dt=datetime.now(timezone.utc),
+        issues=issues,
+    )
+    assert result == []
+    assert len(issues) == 1
+    assert "403" in issues[0]["reason"]

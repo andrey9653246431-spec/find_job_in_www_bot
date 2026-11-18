@@ -333,6 +333,7 @@ async def _fetch_hh_api_vacancies(
     skills: List[str],
     period_days: int,
     cutoff_dt: datetime,
+    issues: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     """Запрашивает вакансии через бесплатный открытый API HeadHunter (api.hh.ru/vacancies)."""
     # Ищем по должности: государственные и корпоративные API плохо переносят
@@ -354,6 +355,19 @@ async def _fetch_hh_api_vacancies(
         "https://api.hh.ru/vacancies", params=params, headers=DEFAULT_HEADERS
     ) as resp:
         if resp.status != 200:
+            # hh.ru отдаёт 403 анонимным запросам с облачных IP (Cloudflare/антибот):
+            # молчать нельзя — пользователь должен знать, что вакансии hh не получены.
+            if issues is not None:
+                issues.append(
+                    {
+                        "title": source.get("title", "Сайт: HeadHunter (hh.ru API)"),
+                        "url": source.get("canonical_url", "https://hh.ru"),
+                        "reason": (
+                            f"HTTP {resp.status} — API hh.ru отклонил анонимный запрос "
+                            "(блокировка облачных IP); откройте hh.ru вручную"
+                        ),
+                    }
+                )
             return []
         data = await resp.json()
 
@@ -664,6 +678,7 @@ async def _parse_single_source(
                 skills=skills,
                 period_days=period_days,
                 cutoff_dt=cutoff_dt,
+                issues=issues,
             )
 
         # 2. Открытые данные «Работа России» (trudvsem.ru) — JSON API с параметрами

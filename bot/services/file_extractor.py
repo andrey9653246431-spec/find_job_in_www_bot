@@ -3,7 +3,7 @@
 """
 import io
 import re
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from docx import Document
 from pypdf import PdfReader
 from bot.database import Database
@@ -232,18 +232,96 @@ _ROLE_ADJ_PREFIX = (
     r"Операционный|Главный|Ведущий|Старший|Младший|Директор по|Начальник)\s+)?"
 )
 _ROLE_TITLES = (
-    r"(?:разработчик|программист|инженер|аналитик|тестировщик|менеджер|маркетолог|дизайнер|"
+    r"(?:инженер-программист|инженер-конструктор|инженер-технолог|инженер-проектировщик|"
+    r"инженер-энергетик|инженер-сметчик|инженер-электроник|инженер-механик|"
+    r"инженер-испытатель|инженер-наладчик|врач-специалист|"
+    r"разработчик|программист|инженер|аналитик|тестировщик|менеджер|маркетолог|дизайнер|"
     r"специалист|директор|руководитель|начальник|заместитель|бухгалтер|юрист|экономист|"
     r"логист|закупщик|кадровик|рекрутер|секретарь|администратор|координатор|супервайзер|"
     r"мерчандайзер|товаровед|Developer|Engineer|Analyst|Manager|Designer|Scientist|"
     r"Architect|Director|Officer|Specialist|Consultant|Coordinator|Supervisor|"
     r"Administrator|Head)\b"
 )
-# Хвост должности: «… по продажам», «… отдела продаж», «… направления логистики»
-_ROLE_TAIL = (
-    r"(?:\s+(?:по|отдела|отделом|департамента|направления|группы|службы|"
-    r"филиала|подразделения)\s+(?:[А-Яа-яЁёA-Za-z]+\s*){1,3})?"
+# Хвост должности: «… по продажам», «… отдела продаж», «… продукта», «… цеха».
+# Раньше хвост начинался только с «по/отдела/направления», из-за чего
+# «Руководитель продукта» превращался в «Руководитель», а «Менеджер проектов» — в
+# «Менеджер». Теперь допускается ещё и существительное в родительном падеже.
+_ROLE_TAIL_STOP = {
+    # служебные слова и обрывающие фразы
+    "с", "со", "в", "во", "на", "и", "или", "для", "от", "до", "о", "об", "при", "без",
+    "из", "к", "ко", "у", "через", "после", "опыт", "опыта", "опытом", "работы", "работа",
+    "работает", "стаж", "лет", "года", "год", "месяцев", "месяца",
+    # города, компании, служебные блоки резюме
+    "город", "москва", "москве", "санкт-петербург", "спб", "россия", "рф", "резюме",
+    "вакансия", "компания", "компании", "ооо", "ао", "пао", "зао", "оао", "ип", "group",
+    "llc", "ltd", "inc", "and", "with", "for", "of", "in", "at", "the", "experience",
+    "years", "полная", "занятость", "зарплата", "ожидания", "требования", "обязанности",
+    "цель", "ключевые", "навыки", "образование",
+}
+_ROLE_TAIL_WORD = (
+    r"(?!(?:" + "|".join(sorted(_ROLE_TAIL_STOP, key=len, reverse=True)) + r")\b)"
+    r"[А-Яа-яЁёA-Za-z][А-Яа-яЁёA-Za-z\-]+"
+    r"|"
+    # «с клиентами», «с поставщиками», но не «с опытом» и не «с целью»
+    r"с(?!\s+(?:опыт|цел|знан|использован|учёт|учет|обязанн|требован|зарплат|город|компан))"
 )
+# Оборачиваем в группу: иначе альтернатива «с» теряет обязательный пробел
+_ROLE_TAIL_UNIT = "(?:" + _ROLE_TAIL_WORD + ")"
+_ROLE_TAIL = (
+    r"(?:"
+    # «по продажам», «отдела продаж», «направления логистики», «по работе с клиентами»
+    r"\s+(?:по|отдела|отделом|департамента|направления|группы|службы|филиала|подразделения)"
+    r"(?:\s+" + _ROLE_TAIL_UNIT + r"){1,4}"
+    r"|"
+    # «продукта», «проектов», «цеха», «данных» — существительное после должности
+    r"(?:\s+" + _ROLE_TAIL_UNIT + r"){1,2}"
+    r")?"
+)
+
+# Аббревиатуры и англоязычные названия, которые словарь должностей не ловит
+ROLE_ABBREVIATIONS: List[Tuple[re.Pattern, str]] = [
+    (re.compile(r"\bCEO\b"), "CEO (Chief Executive Officer)"),
+    (re.compile(r"\bCTO\b"), "CTO (Chief Technology Officer)"),
+    (re.compile(r"\bCFO\b"), "CFO (Chief Financial Officer)"),
+    (re.compile(r"\bCOO\b"), "COO (Chief Operating Officer)"),
+    (re.compile(r"\bCMO\b"), "CMO (Chief Marketing Officer)"),
+    (re.compile(r"\bCPO\b"), "CPO (Chief Product Officer)"),
+    (re.compile(r"\bCIO\b"), "CIO (Chief Information Officer)"),
+    (re.compile(r"\bCISO\b"), "CISO (Chief Information Security Officer)"),
+    (re.compile(r"\bCHRO\b"), "CHRO (Chief HR Officer)"),
+    (re.compile(r"\bCCO\b"), "CCO (Chief Commercial Officer)"),
+    (re.compile(r"\bProduct Owner\b", re.I), "Product Owner"),
+    (re.compile(r"\bProduct Manager\b", re.I), "Product Manager"),
+    (re.compile(r"\bProject Manager\b", re.I), "Project Manager"),
+    (re.compile(r"\bProgram Manager\b", re.I), "Program Manager"),
+    (re.compile(r"\bScrum Master\b", re.I), "Scrum Master"),
+    (re.compile(r"\bBusiness Analyst\b", re.I), "Business Analyst"),
+    (re.compile(r"\bSystem Analyst\b", re.I), "System Analyst"),
+    (re.compile(r"\bData Scientist\b", re.I), "Data Scientist"),
+    (re.compile(r"\bData Engineer\b", re.I), "Data Engineer"),
+    (re.compile(r"\bSolution Architect\b", re.I), "Solution Architect"),
+    (re.compile(r"\bHead of\s+([A-Za-z][A-Za-z\s\-]{2,30})", re.I), "Head of"),
+]
+
+
+def _find_abbreviation(line: str) -> Optional[Tuple[int, str]]:
+    """Ищет C-level аббревиатуру или англоязычную должность: (позиция, название)."""
+    for pattern, title in ROLE_ABBREVIATIONS:
+        match = pattern.search(line)
+        if not match:
+            continue
+        if title == "Head of":
+            tail = re.sub(r"\s+", " ", match.group(1)).strip(" .,;:-–—")
+            return match.start(), f"Head of {tail}"[:80]
+        return match.start(), title
+    return None
+
+
+def _match_abbreviation(line: str) -> str:
+    """Распознаёт C-level аббревиатуры и англоязычные названия должностей."""
+    hit = _find_abbreviation(line)
+    return hit[1] if hit else ""
+
 
 ROLE_TITLE_REGEX = re.compile(
     "("
@@ -255,6 +333,20 @@ ROLE_TITLE_REGEX = re.compile(
     + ")",
     re.IGNORECASE,
 )
+
+
+# Слова, которые встречаются в должностях и навыках, но не в ФИО.
+# Нужны, чтобы «Product Management», «Scrum Master», «Unit Economics» не принимались
+# за имя человека и не выпадали из профиля резюме.
+_NOT_A_NAME_TOKENS = {
+    "manager", "management", "owner", "master", "analyst", "analytics", "engineer", "engineering",
+    "developer", "designer", "director", "officer", "lead", "head", "specialist", "consultant",
+    "consulting", "economist", "economics", "marketing", "sales", "product", "project", "program",
+    "scrum", "data", "science", "scientist", "finance", "financial", "accounting", "audit",
+    "hr", "qa", "devops", "python", "java", "sql", "crm", "erp", "sap", "tableau", "jira",
+    "confluence", "roadmap", "unit", "growth", "digital", "brand", "marketplace", "logistics",
+    "procurement", "customer", "success", "operations", "strategy", "business", "support",
+}
 
 
 def is_probable_person_name(line: str) -> bool:
@@ -287,8 +379,16 @@ def is_probable_person_name(line: str) -> bool:
     if title_words < 2:
         return False
 
-    # Имя не должно состоять из слов-должностей/разделов
+    # Должности латиницей («Product Owner», «Scrum Master») — не ФИО
+    if _match_abbreviation(raw):
+        return False
+
+    # Имя не должно состоять из слов-должностей/разделов/навыков
     word_lows = {w.lower() for w in words}
+    if word_lows & _NOT_A_NAME_TOKENS:
+        return False
+    if raw.lower() in KNOWN_SKILLS_MAP:
+        return False
     if word_lows & SECTION_HEADINGS:
         return False
     if ROLE_TITLE_REGEX.search(raw):
@@ -315,6 +415,26 @@ def _clean_role(raw: str) -> str:
     role = re.sub(r"\s+", " ", raw).strip(" .,;:-–—")
     role = re.sub(r"^(?:желаемая\s+)?(?:должность|позиция|вакансия|role|position)\s*[:\-–]\s*", "", role, flags=re.I)
     return role
+
+
+def _pick_title_candidate(line: str) -> str:
+    """Выбирает из строки самое раннее совпадение: словарь должностей или аббревиатуру.
+
+    Нужно, чтобы «Senior Product Manager» не превращался в «Product Manager»,
+    а «Технический директор (CTO)» — в «CTO».
+    """
+    candidates: List[Tuple[int, str]] = []
+    abbreviation = _find_abbreviation(line)
+    if abbreviation:
+        candidates.append(abbreviation)
+    match = ROLE_TITLE_REGEX.search(line)
+    if match:
+        found = _clean_role(match.group(1))
+        if len(found) >= 4:
+            candidates.append((match.start(), found))
+    if not candidates:
+        return ""
+    return min(candidates, key=lambda item: item[0])[1]
 
 
 def extract_role_from_resume(resume_text: str) -> str:
@@ -347,21 +467,17 @@ def extract_role_from_resume(resume_text: str) -> str:
             continue
         if line.lower().strip(" :") in SECTION_HEADINGS:
             continue
-        match = ROLE_TITLE_REGEX.search(line)
-        if match:
-            found = _clean_role(match.group(1))
-            if len(found) >= 4:
-                return found
+        best = _pick_title_candidate(line)
+        if best:
+            return best
 
     # 3. Название профессии в блоке опыта (например, «Директор по продажам»)
     for line in lines[:60]:
         if len(line) > 90 or is_probable_person_name(line):
             continue
-        match = ROLE_TITLE_REGEX.search(line)
-        if match:
-            found = _clean_role(match.group(1))
-            if len(found) >= 4:
-                return found
+        best = _pick_title_candidate(line)
+        if best:
+            return best
 
     return ""
 
@@ -484,6 +600,19 @@ async def upload_and_register_resume(
     return saved_record
 
 
+# «Обрезанные» должности: сохранилось только общее слово без уточнения.
+GENERIC_ROLE_WORDS = {
+    "руководитель", "менеджер", "директор", "специалист", "инженер", "аналитик",
+    "начальник", "заместитель", "разработчик", "программист", "консультант",
+    "администратор", "координатор", "бухгалтер", "маркетолог", "дизайнер", "логист",
+}
+
+
+def is_truncated_role(value: str) -> bool:
+    """Проверяет, что должность сохранилась обрезанной («Руководитель» вместо «Руководитель продукта»)."""
+    return (value or "").strip().lower() in GENERIC_ROLE_WORDS
+
+
 def repair_profile_values(
     role: str, skills: List[str], raw_text: str
 ) -> Tuple[str, List[str], bool]:
@@ -516,6 +645,13 @@ def repair_profile_values(
 
     bad_role = _is_bad_role(role)
     bad_skills = bool(skills) and all(_is_bad_skill(skill) for skill in skills)
+
+    # Должность вида «Руководитель» без уточнения — перечитываем резюме целиком
+    if not bad_role and is_truncated_role(role):
+        fuller_role = extract_role_from_resume(raw_text)
+        if len(fuller_role) > len(role):
+            return fuller_role, skills, True
+
     if not bad_role and not bad_skills:
         return role, skills, False
 
