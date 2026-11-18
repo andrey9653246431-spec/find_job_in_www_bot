@@ -15,6 +15,9 @@ async def setup_bot_commands(bot: Bot) -> None:
     commands = [
         BotCommand(command="start", description="Запустить бота / Главное меню"),
         BotCommand(command="upload_resume", description="📤 Загрузить резюме (PDF, DOCX, TXT, текст)"),
+        BotCommand(command="gold_standard", description="🏛 Золотой стандарт: Executive CV (Framework 2026+)"),
+        BotCommand(command="example_cv", description="👁 Пример идеального резюме (Executive CV 2026+)"),
+        BotCommand(command="find_resources", description="🧭 Каналы, агрегаторы и карьерные страницы"),
         BotCommand(command="standards", description="📐 Задать стандарты рынка внутри бота"),
         BotCommand(command="adapt_resume", description="✨ Адаптировать резюме под стандарты рынка"),
         BotCommand(command="search", description="🔍 Поиск вакансий (1 день / 1 неделя / 1 месяц)"),

@@ -15,3 +15,8 @@ class MarketStandardsStates(StatesGroup):
 class SourceStates(StatesGroup):
     """Состояние ожидания ссылки на новый источник (сайт или ТГ-канал)."""
     waiting_for_source_url = State()
+
+
+class ResourceSearchStates(StatesGroup):
+    """Состояние ожидания запроса для поиска каналов, агрегаторов или компаний."""
+    waiting_for_query = State()

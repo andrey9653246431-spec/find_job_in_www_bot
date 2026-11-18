@@ -32,3 +32,6 @@ data/*.sqlite3
 .bash*
 .profile
 
+
+# Сгенерированный архив проекта (не коммитим в репозиторий)
+find_job_in_www_bot.zip

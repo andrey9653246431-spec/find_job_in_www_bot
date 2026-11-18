@@ -9,12 +9,14 @@
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, Message
 from bot.database import Database
 from bot.keyboards import get_standards_keyboard
 from bot.services.market_standards import (
+    build_ideal_executive_cv_2026_example,
     get_market_standards,
     reset_market_standards,
+    set_gold_standard_executive_cv_2026,
     set_market_standards,
 )
 from bot.states import MarketStandardsStates
@@ -42,6 +44,77 @@ def _format_standards_info(standards: dict) -> str:
         f"📋 **Правила и критерии стандарта:**\n{standards.get('standards_text')}\n\n"
         "👇 Вы можете переключить пресет стандарта или **задать собственные стандарты рынка** кнопкой ниже:"
     )
+
+
+@router.message(Command("gold_standard"))
+async def cmd_gold_standard(
+    message: Message, state: FSMContext, db: Database
+) -> None:
+    """Отдельная команда установки Золотого стандарта Executive CV (Framework 2026+)."""
+    await state.clear()
+    updated = await set_gold_standard_executive_cv_2026(
+        db=db, user_id=message.from_user.id  # type: ignore
+    )
+    await message.answer(
+        "🏛 **Установлен «Золотой стандарт»: АРХИТЕКТУРА ИДЕАЛЬНОГО EXECUTIVE CV (Framework 2026+)**!\n\n"
+        + _format_standards_info(updated),
+        reply_markup=get_standards_keyboard(),
+        parse_mode="Markdown",
+    )
+
+
+# =============================================================================
+# ПОКАЗ ЭТАЛОННОГО ПРИМЕРА ИДЕАЛЬНОГО РЕЗЮМЕ (Executive CV Framework 2026+)
+# =============================================================================
+
+async def _send_ideal_cv_example(message: Message) -> None:
+    """Отправляет эталонный пример идеального резюме по «Золотому стандарту»:
+    пояснение, карту структуры, готовый текст Executive CV и файл `.docx`.
+    """
+    example = build_ideal_executive_cv_2026_example()
+    audit = example["audit"]
+
+    structure_txt = "\n".join(example["structure"])
+    header = (
+        f"{example['intro']}\n\n"
+        f"📊 **ATS Score исходного образца:** `{audit['score']}/100`\n"
+        f"🧱 **Карта архитектуры и фильтров:**\n{structure_txt}\n"
+        "━━━━━━━━━━━━━━━━━━━━"
+    )
+    await message.answer(header, parse_mode="Markdown")
+
+    # Сам эталонный текст отправляем без parse_mode — чтобы Markdown в резюме не ломал разметку
+    example_text = example["example_text"]
+    for chunk_start in range(0, len(example_text), 3800):
+        await message.answer(example_text[chunk_start : chunk_start + 3800])
+
+    await message.answer_document(
+        document=BufferedInputFile(
+            example["docx_bytes"], filename="Ideal_Executive_CV_2026_Example.docx"
+        ),
+        caption=(
+            "📎 **Эталонный пример Executive CV (Framework 2026+)** в формате `.docx` — "
+            "можно использовать как шаблон структуры для своего резюме."
+        ),
+        parse_mode="Markdown",
+    )
+
+
+@router.message(Command("example_cv"))
+@router.message(Command("example"))
+@router.message(F.text == "🏛 Пример идеального резюме")
+async def cmd_show_ideal_cv_example(message: Message, state: FSMContext) -> None:
+    """Отдельная функция показа примера идеального резюме по «Золотому стандарту»."""
+    await state.clear()
+    await _send_ideal_cv_example(message)
+
+
+@router.callback_query(F.data == "std_action:example")
+async def cb_show_ideal_cv_example(callback: CallbackQuery) -> None:
+    """Показ примера идеального резюме по inline-кнопке меню стандартов."""
+    await callback.answer("Показываю эталонный пример Executive CV")
+    if callback.message:
+        await _send_ideal_cv_example(callback.message)
 
 
 @router.message(Command("standards"))

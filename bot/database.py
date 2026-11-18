@@ -12,24 +12,38 @@ from typing import Any, Dict, List, Optional, Tuple
 import aiosqlite
 
 DEFAULT_SOURCES: List[Dict[str, str]] = [
+    # Проверенные Telegram-каналы с вакансиями (публичное веб-превью доступно)
     {
-        "canonical_url": "https://t.me/ru_python_jobs",
-        "parse_url": "https://t.me/s/ru_python_jobs",
+        "canonical_url": "https://t.me/habr_career",
+        "parse_url": "https://t.me/s/habr_career",
         "source_type": "tg_channel",
-        "title": "TG: Python Jobs RU (@ru_python_jobs)",
+        "title": "TG: Хабр Карьера (@habr_career)",
     },
     {
-        "canonical_url": "https://t.me/devjobs",
-        "parse_url": "https://t.me/s/devjobs",
+        "canonical_url": "https://t.me/job_it_ru",
+        "parse_url": "https://t.me/s/job_it_ru",
         "source_type": "tg_channel",
-        "title": "TG: DevJobs — Вакансии в IT (@devjobs)",
+        "title": "TG: IT Job x IT Vacancies (@job_it_ru)",
     },
     {
-        "canonical_url": "https://t.me/remote_it_jobs",
-        "parse_url": "https://t.me/s/remote_it_jobs",
+        "canonical_url": "https://t.me/vacancies_it",
+        "parse_url": "https://t.me/s/vacancies_it",
         "source_type": "tg_channel",
-        "title": "TG: Remote IT Jobs (@remote_it_jobs)",
+        "title": "TG: HR | Вакансии (@vacancies_it)",
     },
+    {
+        "canonical_url": "https://t.me/remote_work_jobs",
+        "parse_url": "https://t.me/s/remote_work_jobs",
+        "source_type": "tg_channel",
+        "title": "TG: Remote Jobs | Remote Work (@remote_work_jobs)",
+    },
+    {
+        "canonical_url": "https://t.me/marketing_jobs",
+        "parse_url": "https://t.me/s/marketing_jobs",
+        "source_type": "tg_channel",
+        "title": "TG: marketing jobs (@marketing_jobs)",
+    },
+    # Сайты и агрегаторы вакансий
     {
         "canonical_url": "https://hh.ru",
         "parse_url": "https://api.hh.ru/vacancies",
@@ -41,6 +55,18 @@ DEFAULT_SOURCES: List[Dict[str, str]] = [
         "parse_url": "https://career.habr.com/vacancies/rss",
         "source_type": "website",
         "title": "Сайт: Хабр Карьера (career.habr.com)",
+    },
+    {
+        "canonical_url": "https://www.superjob.ru",
+        "parse_url": "https://www.superjob.ru/rss/job/",
+        "source_type": "website",
+        "title": "Сайт: SuperJob (superjob.ru)",
+    },
+    {
+        "canonical_url": "https://geekjob.ru",
+        "parse_url": "https://geekjob.ru/vacancies",
+        "source_type": "website",
+        "title": "Сайт: GeekJob (geekjob.ru)",
     },
 ]
 

@@ -7,8 +7,9 @@
 4. Если источник новый — добавляет его в базу данных и сообщает об успешном добавлении.
 """
 import re
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
+import aiohttp
 from bot.database import Database
 
 TG_USERNAME_RE = re.compile(r"^@?([a-zA-Z0-9_]{4,64})$")
@@ -114,6 +115,37 @@ def normalize_source_input(raw_input: str) -> Dict[str, str]:
     }
 
 
+async def verify_source_availability(
+    normalized: Dict[str, str], timeout: float = 8.0
+) -> Optional[bool]:
+    """Проверяет, что ресурс реально доступен (защита от несуществующих ссылок).
+
+    Для Telegram-каналов используется публичное веб-превью `https://t.me/s/<channel>`:
+    если канал приватный или такого адреса нет, страница не отдаёт ленту сообщений.
+    Для сайтов проверяется HTTP-ответ (2xx/3xx).
+
+    Возвращает:
+    - True — ресурс доступен;
+    - False — ресурс недоступен (приватный канал, 404 и т.п.);
+    - None — проверить не удалось (сеть/таймаут), решение остаётся за пользователем.
+    """
+    url = normalized.get("parse_url") or normalized.get("canonical_url")
+    if not url:
+        return None
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; find_job_bot/1.0)"}
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session:
+            async with session.get(url, headers=headers, allow_redirects=True) as response:
+                if response.status >= 400:
+                    return False
+                if normalized.get("source_type") != "tg_channel":
+                    return True
+                html = await response.text(errors="ignore")
+                # Признак живого публичного канала — виджет с сообщениями в веб-превью
+                return "tgme_widget_message" in html or "tgme_channel_info" in html
+    except Exception:  # noqa: BLE001 — сетевые сбои не должны ломать добавление источника
+        return None
+
 async def register_source_in_db(
     db: Database,
     raw_input: str,
@@ -126,6 +158,7 @@ async def register_source_in_db(
     - Если источник НОВЫЙ: `is_new = True`, источник сохраняется в БД, сообщение подтверждает добавление.
     """
     normalized = normalize_source_input(raw_input)
+    availability = await verify_source_availability(normalized)
     is_new, record = await db.add_source(
         canonical_url=normalized["canonical_url"],
         parse_url=normalized["parse_url"],
@@ -140,12 +173,25 @@ async def register_source_in_db(
         else "Веб-сайт / Интернет-ресурс"
     )
 
+    if availability is False:
+        availability_note = (
+            "⚠️ **Проверьте актуальность ссылки:** ресурс не отдал публичный контент "
+            "(приватный канал, неверный адрес или блокировка). Точный адрес может быть изменён."
+        )
+    elif availability is True:
+        availability_note = "🔗 Проверка ссылки: ресурс доступен."
+    else:
+        availability_note = (
+            "ℹ️ Проверка ссылки не удалась (сеть недоступна) — проверьте актуальность адреса вручную."
+        )
+
     if not is_new:
         message = (
             "⚠️ **Этот источник уже есть в моей базе данных!**\n\n"
             f"• **Название:** {record.get('title')}\n"
             f"• **Тип ресурса:** {type_label}\n"
             f"• **Ссылка в базе:** `{record.get('canonical_url')}`\n\n"
+            f"{availability_note}\n\n"
             "Повторное добавление не требуется — он уже участвует в поиске вакансий."
         )
     else:
@@ -155,6 +201,7 @@ async def register_source_in_db(
             f"• **Тип ресурса:** {type_label}\n"
             f"• **Ссылка в базе:** `{record.get('canonical_url')}`\n"
             f"• **Адрес парсинга:** `{record.get('parse_url')}`\n\n"
+            f"{availability_note}\n\n"
             "Теперь бот будет искать вакансии и по этому ресурсу."
         )
 

@@ -18,8 +18,10 @@ from bot.services.file_extractor import (
 )
 from bot.services.market_standards import (
     adapt_resume_to_market_standards,
+    build_ideal_executive_cv_2026,
     get_market_standards,
     reset_market_standards,
+    set_gold_standard_executive_cv_2026,
     set_market_standards,
 )
 from bot.services.source_manager import (
@@ -125,9 +127,63 @@ async def test_market_standards_and_resume_adaptation(db: Database) -> None:
     assert "стрессоустойчивый" not in adapted_text.lower()
     assert len(adaptation["docx_bytes"]) > 1000
 
-    # Проверяем сброс стандартов к базовым
+    # Проверяем сброс стандартов к Золотому стандарту Executive CV (Framework 2026+)
     reset_std = await reset_market_standards(db=db, user_id=user_id)
-    assert reset_std["preset_key"] == "universal_ats"
+    assert reset_std["preset_key"] == "executive_cv_2026"
+
+
+@pytest.mark.asyncio
+async def test_gold_standard_executive_cv_2026_framework(db: Database) -> None:
+    """Тест 2.1: Отдельная функция формирования идеального резюме по
+    «Золотому стандарту» — АРХИТЕКТУРА ИДЕАЛЬНОГО EXECUTIVE CV (Framework 2026+).
+    """
+    user_id = 205
+    raw_executive_resume = (
+        "Сергей Волков\n"
+        "Должность: Commercial Director\n"
+        "Дата рождения: 12.05.1985, 41 год, женат, есть дети, фото приложено\n"
+        "Город: Москва\n"
+        "Контакты: +7 (999) 123-45-67, s.volkov@example.com, linkedin.com/in/svolkov\n"
+        "Навыки: P&L, B2B, CRM, BI, Agile, SQL, Excel\n"
+        "О себе: 14+ лет опыта в ритейле. Ответственный и коммуникабельный руководитель.\n"
+        "Опыт работы:\n"
+        "ООО Фэшн Ритейл Групп (2020 - 2026)\n"
+        "- Занимался развитием маркетплейсов: продажи выросли х3 (до 20% оборота 9+ млрд руб.).\n"
+        "- Занимался управлением категорией и OTB бюджетом.\n"
+        "- Участвовал в разработке новой ценовой стратегии (+15% маржинальности).\n"
+        "- Принимал участие в запуске BI-аналитики.\n"
+        "- Занимался настройкой складской логистики.\n"
+        "- Работал над обучением персонала.\n"
+        "Образование: ВШЭ, Стратегический менеджмент, 2008. Английский — B2."
+    )
+    await upload_and_register_resume(db=db, user_id=user_id, raw_text=raw_executive_resume)
+
+    # Устанавливаем Золотой стандарт отдельной функцией
+    gold_std = await set_gold_standard_executive_cv_2026(db=db, user_id=user_id)
+    assert gold_std["preset_key"] == "executive_cv_2026"
+    assert "Framework 2026+" in gold_std["title"]
+
+    # Адаптируем резюме по Золотому стандарту
+    result = await adapt_resume_to_market_standards(db=db, user_id=user_id)
+    cv_text = result["adapted_text"]
+
+    # 1. Проверяем наличие всех 5 архитектурных блоков Framework 2026+
+    assert "ПРОФИЛЬ (Executive Summary)" in cv_text
+    assert "КЛЮЧЕВАЯ ЭКСПЕРТИЗА (Core Expertise / ATS Keywords)" in cv_text
+    assert "Business & Strategy:" in cv_text
+    assert "Operations:" in cv_text
+    assert "Leadership & Tech:" in cv_text
+    assert " | " in cv_text  # Облако тегов через разделитель |
+    assert "ОПЫТ РАБОТЫ (Professional Experience)" in cv_text
+    assert "ДОПОЛНИТЕЛЬНЫЕ БЛОКИ" in cv_text
+
+    # 2. Проверяем фильтр «Борьба с Red Flags» (удалены дата рождения, женат, ответственный и коммуникабельный)
+    assert "12.05.1985" not in cv_text
+    assert "женат" not in cv_text.lower()
+    assert "ответственный и коммуникабельный" not in cv_text.lower()
+
+    # 3. Проверяем фильтр «Evidence Map» (не более 4 буллитов ключевых результатов на роль)
+    assert "сокращено второстепенных пунктов для интервью: 2" in cv_text
 
 
 @pytest.mark.asyncio
@@ -136,11 +192,11 @@ async def test_sources_duplicate_and_new_detection(db: Database) -> None:
     # 1. Пытаемся добавить ТГ-канал, который уже есть в предзаполненной БД (в другом формате ссылки)
     is_new_1, rec_1, msg_1 = await register_source_in_db(
         db=db,
-        raw_input="@ru_python_jobs",
+        raw_input="@habr_career",
         user_id=303,
     )
     assert is_new_1 is False
-    assert rec_1["canonical_url"] == "https://t.me/ru_python_jobs"
+    assert rec_1["canonical_url"] == "https://t.me/habr_career"
     assert "уже есть в моей базе данных" in msg_1
 
     # 2. Добавляем совершенно НОВЫЙ Telegram-канал
@@ -277,3 +333,165 @@ def test_vacancy_parsing_and_period_filtering() -> None:
     assert "Результаты поиска вакансий за 1 месяц" in msg
     assert "Senior Python Developer" in msg
     assert "https://t.me/ru_python_jobs/1001" in msg
+
+
+@pytest.mark.asyncio
+async def test_gold_standard_multi_role_and_clean_ats_keywords(db: Database) -> None:
+    """Тест 2.2: Золотой стандарт — несколько ролей, чистые ATS-теги без дублей,
+    корректный период из шапки компании и Scope без служебных ярлыков.
+    """
+    user_id = 207
+    raw_resume = (
+        "Иван Петров\n"
+        "Должность: COO\n"
+        "Локация: Санкт-Петербург\n"
+        "Контакты: +7 999 000-11-22, ivan@example.com\n"
+        "Навыки: Логистика, WMS, P&L, Управление командой\n"
+        "О себе: 12 лет опыта в логистике. Управлял контуром с оборотом 5 млрд руб.\n"
+        "Опыт работы:\n"
+        "ООО Логистик Плюс, транспортная компания, 900 сотрудников (2022 - 2026)\n"
+        "Scope: операционная модель, P&L, сеть хабов\n"
+        "- Сократил издержки на 18% за счет перестройки маршрутизации.\n"
+        "ПАО ТрансСервис, логистика (2015 - 2022)\n"
+        "- Увеличил пропускную способность склада на 25%.\n"
+        "Образование: МГТУ, Логистика, 2012"
+    )
+    await upload_and_register_resume(db=db, user_id=user_id, raw_text=raw_resume)
+    await set_gold_standard_executive_cv_2026(db=db, user_id=user_id)
+    cv_text = (await adapt_resume_to_market_standards(db=db, user_id=user_id))["adapted_text"]
+
+    # 1. Стаж сохраняется в профиле (не вырезается фильтром возраста)
+    assert "с опытом 12+ лет" in cv_text
+    assert "Senior-level руководитель (COO)" in cv_text
+
+    # 2. Обратный хронологический порядок: две роли с периодами из шапки компании
+    assert "**Период:** 2022 — 2026" in cv_text
+    assert "**Период:** 2015 — 2022" in cv_text
+    assert cv_text.index("2022 — 2026") < cv_text.index("2015 — 2022")
+
+    # 3. Scope без служебного ярлыка «Scope:»
+    assert "**Scope (Область охвата):** операционная модель, P&L, сеть хабов" in cv_text
+
+    # 4. ATS-облако: каноничная лексика вместо сырых дублей («P&L» -> «P&L Management»)
+    assert "P&L Management" in cv_text
+    assert " | P&L | " not in cv_text
+    assert "Логистика |" not in cv_text  # русский дубль Supply Chain & Logistics не добавляется
+
+
+def test_ideal_executive_cv_example_function() -> None:
+    """Тест 2.3: Отдельная функция показа примера идеального резюме
+    (`build_ideal_executive_cv_2026_example`) — работает без загруженного резюме и БД.
+    """
+    from bot.services.market_standards import build_ideal_executive_cv_2026_example
+
+    example = build_ideal_executive_cv_2026_example()
+
+    # 1. Возвращается полный набор данных для показа в чате + файл .docx
+    assert example["example_text"]
+    assert example["docx_bytes"][:2] == b"PK"  # корректный OOXML-архив
+    assert 0 <= example["audit"]["score"] <= 100
+    assert len(example["structure"]) == 6
+
+    # 2. Пример содержит все 5 блоков архитектуры Framework 2026+
+    assert "СЕРГЕЙ ВОЛКОВ" in example["example_text"]
+    assert "ПРОФИЛЬ (Executive Summary)" in example["example_text"]
+    assert "КЛЮЧЕВАЯ ЭКСПЕРТИЗА (Core Expertise / ATS Keywords)" in example["example_text"]
+    assert "ОПЫТ РАБОТЫ (Professional Experience)" in example["example_text"]
+    assert "ДОПОЛНИТЕЛЬНЫЕ БЛОКИ" in example["example_text"]
+
+    # 3. Red Flags отсутствуют в эталонном примере
+    assert "12.05.1985" not in example["example_text"]
+    assert "женат" not in example["example_text"].lower()
+    assert "коммуникабельный" not in example["example_text"].lower()
+
+
+def test_search_assistant_intent_and_formats() -> None:
+    """Тест 6: Алгоритм поиска ресурсов (HR-ассистент) — определение типа поиска,
+    Markdown-формат, дисклеймер, деление длинных ответов и предупреждения.
+    """
+    from bot.services.resource_catalog import (
+        AGGREGATORS,
+        COMPANIES,
+        LINKS_DISCLAIMER,
+        TELEGRAM_CHANNELS,
+        _company_vacancies_url,
+        _verified_tg_url,
+    )
+    from bot.services.search_assistant import (
+        SEARCH_TYPE_AGGREGATORS,
+        SEARCH_TYPE_COMPANIES,
+        SEARCH_TYPE_PROFESSION,
+        SEARCH_TYPE_TELEGRAM,
+        build_resources_answer,
+        detect_industry,
+        detect_search_intent,
+        split_long_message,
+    )
+
+    # 1. Определение типа поиска по правилам ТЗ
+    assert detect_search_intent("Дай ссылки на ТГ-каналы и чаты для HR") == SEARCH_TYPE_TELEGRAM
+    assert detect_search_intent("покажи агрегаторы и сайты с вакансиями") == SEARCH_TYPE_AGGREGATORS
+    assert detect_search_intent("ТОП-100 компаний с карьерными страницами") == SEARCH_TYPE_COMPANIES
+    assert detect_search_intent("найди вакансии HR-менеджер") == SEARCH_TYPE_PROFESSION
+    assert detect_search_intent("Дай ссылки на ТГ-каналы и агрегаторы для поиска работы в HR") == "mixed"
+    assert detect_industry("компании ритейла и e-commerce") == "Ритейл и e-commerce"
+    assert detect_industry("IT компании") == "IT и Телеком"
+
+    # 2. Telegram-каналы: формат Markdown [Название](https://t.me/username) + тематика
+    tg_answer = build_resources_answer("Дай ссылки на ТГ-каналы")
+    assert tg_answer["search_type"] == SEARCH_TYPE_TELEGRAM
+    for channel in TELEGRAM_CHANNELS[:3]:
+        assert f"[{channel['name']}]({_verified_tg_url(channel['username'])})" in tg_answer["text"]
+    assert "https://t.me/" in tg_answer["text"]
+    assert LINKS_DISCLAIMER in tg_answer["text"]
+
+    # 3. Агрегаторы: обязательные ресурсы из требований присутствуют
+    agg_answer = build_resources_answer("агрегаторы вакансий")
+    for mandatory in ("https://hh.ru", "career.habr.com", "https://hirify.me", "getmatch.ru"):
+        assert mandatory in agg_answer["text"]
+    assert LINKS_DISCLAIMER in agg_answer["text"]
+
+    # 4. Компании: группировка по отраслям, сайт + ссылка на вакансии
+    companies_answer = build_resources_answer("компании ритейла")
+    assert "### 🛒 Ритейл и e-commerce" in companies_answer["text"]
+    first_retail = next(c for c in COMPANIES if c["industry"] == "Ритейл и e-commerce")
+    assert f"[{first_retail['site']}]({first_retail['site']})" in companies_answer["text"]
+    assert f"]({_company_vacancies_url(first_retail)})" in companies_answer["text"]
+
+    # 5. Предупреждение при запросе более 50 компаний
+    big_answer = build_resources_answer("дай ТОП-500 компаний")
+    assert big_answer["warnings"], "Ожидалось предупреждение о делении ответа на части"
+    assert "50" in " ".join(big_answer["warnings"])
+
+    # 6. Деление длинных ответов под лимит Telegram
+    long_text = "\n".join(f"Строка номер {i} с описанием ресурса" for i in range(600))
+    parts = split_long_message(long_text, limit=1000)
+    assert len(parts) > 1
+    assert all(len(part) <= 1000 for part in parts)
+
+    # 7. Профессия: deep-links агрегаторов и инструкция по поиску в Telegram
+    prof_answer = build_resources_answer("вакансии HR-менеджер")
+    assert prof_answer["search_type"] == SEARCH_TYPE_PROFESSION
+    assert "hh.ru/search/vacancy?text=" in prof_answer["text"]
+    assert "поиск по ключевым словам внутри самого Telegram" in prof_answer["text"]
+    assert LINKS_DISCLAIMER in prof_answer["text"]
+
+    # 8. Запрет галлюцинаций: все ссылки собраны только из проверенного каталога
+    import re as _re
+
+    allowed_urls = {aggregator["url"] for aggregator in AGGREGATORS}
+    allowed_urls |= {f"https://t.me/{c['username']}" for c in TELEGRAM_CHANNELS}
+    for company in COMPANIES:
+        allowed_urls.add(company["site"])
+        allowed_urls.add(_company_vacancies_url(company))
+    # плюс документированные шаблоны поиска по запросу (deep-links с параметрами)
+    allowed_prefixes = (
+        "https://hh.ru/search/vacancy?text=",
+        "https://career.habr.com/vacancies?q=",
+        "https://www.superjob.ru/vacancy/search/?keywords=",
+    )
+    for answer in (tg_answer, agg_answer, companies_answer, prof_answer):
+        for url in _re.findall(r"https?://[^\s\)\|\]\[]+", answer["text"]):
+            assert url in allowed_urls or url.startswith(allowed_prefixes), (
+                f"Ссылка не из каталога: {url}"
+            )

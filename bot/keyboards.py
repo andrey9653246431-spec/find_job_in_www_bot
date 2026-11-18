@@ -23,6 +23,10 @@ def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
                 KeyboardButton(text="🌐 Источники вакансий"),
                 KeyboardButton(text="📄 Моё резюме"),
             ],
+            [
+                KeyboardButton(text="🏛 Пример идеального резюме"),
+                KeyboardButton(text="🧭 Найти каналы и сайты"),
+            ],
         ],
         resize_keyboard=True,
         input_field_placeholder="Выберите действие в меню...",
@@ -54,6 +58,18 @@ def get_standards_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
+                    text="🏛 Золотой стандарт: Executive CV (2026+)",
+                    callback_data="std_preset:executive_cv_2026",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="👁 Показать пример идеального резюме",
+                    callback_data="std_action:example",
+                )
+            ],
+            [
+                InlineKeyboardButton(
                     text="🌐 Универсальный ATS (STAR/XYZ)",
                     callback_data="std_preset:universal_ats",
                 )
@@ -82,7 +98,7 @@ def get_standards_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
-                    text="🔄 Сбросить к базовым стандартам",
+                    text="🔄 Вернуть Золотой стандарт (2026+)",
                     callback_data="std_action:reset",
                 )
             ],
@@ -130,6 +146,38 @@ def get_after_upload_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text="🔍 Искать вакансии (1 день / 1 нед / 1 мес)",
                     callback_data="quick_action:search",
+                )
+            ],
+        ]
+    )
+
+
+def get_resource_search_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура выбора типа поиска ресурсов: ТГ-каналы, агрегаторы, компании."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📱 Telegram-каналы",
+                    callback_data="res_find:telegram_channels",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🌐 Сайты-агрегаторы",
+                    callback_data="res_find:aggregators",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🏢 Компании и карьерные страницы",
+                    callback_data="res_find:companies",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🎯 Вакансии по профессии",
+                    callback_data="res_find:profession",
                 )
             ],
         ]

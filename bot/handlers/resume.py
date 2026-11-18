@@ -189,14 +189,29 @@ async def _run_adaptation_flow(message: Message, user_id: int, db: Database) -> 
             for chunk_start in range(0, len(adapted_text), 3800):
                 await message.answer(adapted_text[chunk_start : chunk_start + 3800])
 
+        # Имя файла зависит от активного стандарта: для «Золотого стандарта» —
+        # Executive CV (Framework 2026+), иначе универсальное имя.
+        if standards.get("preset_key") == "executive_cv_2026":
+            docx_filename = "Ideal_Executive_CV_2026.docx"
+            docx_caption = (
+                "📎 Готовый файл **Executive CV** в формате `.docx` "
+                "(Золотой стандарт: Framework 2026+, максимум 2 страницы)."
+            )
+        else:
+            docx_filename = "Adapted_Resume_Market_Standard.docx"
+            docx_caption = (
+                "📎 Готовый файл адаптированного резюме в формате `.docx` "
+                "(по стандартам рынка)."
+            )
+
         # Отправляем готовый сгенерированный DOCX-файл адаптированного резюме
         docx_file = BufferedInputFile(
             result["docx_bytes"],
-            filename="Adapted_Resume_Market_Standard.docx",
+            filename=docx_filename,
         )
         await message.answer_document(
             document=docx_file,
-            caption="📎 Готовый файл адаптированного резюме в формате `.docx` (по стандартам рынка).",
+            caption=docx_caption,
             parse_mode="Markdown",
         )
     except ValueError as exc:
