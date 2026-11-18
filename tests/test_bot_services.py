@@ -2185,3 +2185,68 @@ async def test_llm_command_explains_how_to_connect(monkeypatch) -> None:
     assert "aistudio.google.com/apikey" in text and "console.groq.com/keys" in text
     assert "GEMINI_API_KEY" in text and "Secrets" in text
     assert message.sent[-1][1].get("parse_mode") == "Markdown"
+
+
+def test_llm_model_prefix_switches_provider_without_workflow_changes() -> None:
+    """Тест 55: LLM_MODEL="провайдер:модель" переключает бесплатного провайдера.
+
+    Нужно для GitHub Actions: набор env-переменных задаётся workflow-файлом,
+    а GITHUB_TOKEN не может его менять — переключаемся уже существующими секретами
+    LLM_API_KEY + LLM_MODEL.
+    """
+    from bot.services.llm_client import resolve_endpoint
+
+    cases = {
+        "gemini:gemini-2.5-flash": (
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+            "gemini-2.5-flash",
+        ),
+        "cerebras:gpt-oss-120b": ("https://api.cerebras.ai/v1", "gpt-oss-120b"),
+        "mistral:mistral-large-latest": ("https://api.mistral.ai/v1", "mistral-large-latest"),
+        "openrouter:openrouter/free": ("https://openrouter.ai/api/v1", "openrouter/free"),
+    }
+    for model, expected in cases.items():
+        assert resolve_endpoint("https://api.groq.com/openai/v1", model) == expected
+
+    # нативный адрес Gemini сам превращается в OpenAI-совместимый
+    assert resolve_endpoint(
+        "https://generativelanguage.googleapis.com/v1beta", "gemini-2.5-flash"
+    ) == ("https://generativelanguage.googleapis.com/v1beta/openai", "gemini-2.5-flash")
+
+    # обычные модели и локальные теги не ломаются
+    assert resolve_endpoint("https://api.groq.com/openai/v1", "llama-3.3-70b-versatile") == (
+        "https://api.groq.com/openai/v1",
+        "llama-3.3-70b-versatile",
+    )
+    assert resolve_endpoint("http://localhost:11434/v1", "llama3:8b") == (
+        "http://localhost:11434/v1",
+        "llama3:8b",
+    )
+
+
+@pytest.mark.asyncio
+async def test_gemini_via_openai_compat_endpoint(monkeypatch) -> None:
+    """Тест 56: Gemini работает через свой OpenAI-совместимый путь (Bearer-ключ)."""
+    from bot.services import llm_client
+
+    for name in ("GEMINI_API_KEY", "GROQ_API_KEY", "PROVIDER_BASE_URLS"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("LLM_API_KEY", "AIza-test-key")
+    monkeypatch.setenv("LLM_MODEL", "gemini:gemini-2.5-flash")
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+
+    seen = {}
+
+    def handler(url, payload, headers):
+        seen["url"] = url
+        seen["auth"] = headers.get("Authorization")
+        seen["model"] = payload.get("model")
+        return 200, _openai_answer(_GOOD_ANSWER)
+
+    _install_fake_session(monkeypatch, handler)
+    result = await llm_client.generate_text("system", "user")
+
+    assert result is not None
+    assert seen["url"] == "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    assert seen["auth"] == "Bearer AIza-test-key"
+    assert seen["model"] == "gemini-2.5-flash"

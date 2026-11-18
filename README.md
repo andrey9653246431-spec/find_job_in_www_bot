@@ -97,8 +97,22 @@
 
 **Шаг 2. Прописать ключ.**
 
-- **Бот на GitHub Actions (как у нас):** репозиторий → **Settings → Secrets and variables → Actions → New repository secret** → имя `GEMINI_API_KEY` (или `GROQ_API_KEY`, `CEREBRAS_API_KEY`, `MISTRAL_API_KEY`, `OPENROUTER_API_KEY`), значение — сам ключ. `run_bot.yml` уже прокидывает все эти имена в окружение.
-- **Локальный запуск:** скопируйте `.env.example` → `.env` и впишите ключ в нужную строку.
+- **Локальный запуск:** скопируйте `.env.example` → `.env` и впишите ключ в нужную строку (`GEMINI_API_KEY`, `GROQ_API_KEY`, `CEREBRAS_API_KEY`, `MISTRAL_API_KEY`, `OPENROUTER_API_KEY`).
+- **Бот на GitHub Actions.** Здесь есть особенность: набор переменных окружения задаётся файлом `.github/workflows/run_bot.yml`, а `GITHUB_TOKEN` **не имеет права** менять файлы workflow (поэтому авто-распаковка архива их и не трогает). Отсюда два пути:
+
+  **Вариант А — без правки workflow (работает сразу).** В workflow уже прокинуты три секрета `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL`. Задайте их так (Settings → Secrets and variables → Actions):
+
+  | Провайдер | `LLM_API_KEY` | `LLM_BASE_URL` | `LLM_MODEL` |
+  |---|---|---|---|
+  | Gemini | ключ Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | `gemini-2.5-flash` |
+  | Groq | ключ Groq | `https://api.groq.com/openai/v1` (значение по умолчанию) | `llama-3.3-70b-versatile` |
+  | Cerebras | ключ Cerebras | `https://api.cerebras.ai/v1` | `gpt-oss-120b` |
+  | Mistral | ключ Mistral | `https://api.mistral.ai/v1` | `mistral-large-latest` |
+  | OpenRouter | ключ OpenRouter | `https://openrouter.ai/api/v1` | `openrouter/free` |
+
+  Ещё короче: `LLM_MODEL` можно задать в виде `провайдер:модель` — тогда `LLM_BASE_URL` подставится сам: `LLM_MODEL=gemini:gemini-2.5-flash`, `cerebras:gpt-oss-120b`, `mistral:mistral-large-latest`, `openrouter:openrouter/free`. Достаточно секретов `LLM_API_KEY` + `LLM_MODEL`.
+
+  **Вариант Б — добавить «родные» имена секретов.** Один раз вручную вставьте в `.github/workflows/run_bot.yml` блок env (он есть в архиве, шаг «Run Telegram Bot with GitHub Secrets») — после этого можно задавать `GEMINI_API_KEY`, `GROQ_API_KEY`, `CEREBRAS_API_KEY`, `MISTRAL_API_KEY`, `OPENROUTER_API_KEY` и перебирать несколько провайдеров сразу (`LLM_ORDER`). Если блок не вставлен, эти секреты просто не попадут в окружение — остальные провайдеры это не затрагивает.
 
 **Шаг 3. Перезапустить бота** (Actions → **run_bot** → Run workflow). Проверка: команда **`/llm`** показывает список подключённых моделей и результат последнего вызова, а в отчёте об адаптации появляется строка «🤖 Модуль обработки: Бесплатная LLM: Groq (free tier) · llama-3.3-70b-versatile».
 

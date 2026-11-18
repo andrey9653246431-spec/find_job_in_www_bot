@@ -69,6 +69,43 @@ def _env(name: str, default: str = "") -> str:
     return (os.getenv(name) or default).strip()
 
 
+# Профили бесплатных провайдеров, к которым можно переключиться одной строкой
+# LLM_MODEL="провайдер:модель" — удобно там, где нельзя добавить новые переменные
+# окружения (например, секреты GitHub Actions задаются только в workflow-файле).
+PROVIDER_BASE_URLS: Dict[str, str] = {
+    "gemini": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "groq": "https://api.groq.com/openai/v1",
+    "cerebras": "https://api.cerebras.ai/v1",
+    "mistral": "https://api.mistral.ai/v1",
+    "openrouter": "https://openrouter.ai/api/v1",
+}
+
+
+def resolve_endpoint(base_url: str, model: str) -> tuple[str, str]:
+    """Разбирает ``LLM_MODEL="gemini:gemini-2.5-flash"`` в (base_url, модель).
+
+    Зачем: в GitHub Actions набор переменных окружения задаётся workflow-файлом,
+    а GITHUB_TOKEN не имеет права его менять. Поэтому провайдера можно переключить
+    уже существующими секретами ``LLM_API_KEY`` + ``LLM_MODEL`` по схеме
+    ``провайдер:модель`` — без правки workflow.
+
+    Дополнительно: если в ``LLM_BASE_URL`` указан нативный адрес Gemini,
+    добавляется ``/openai`` — именно там у Google OpenAI-совместимый API.
+    """
+    base_url = (base_url or "").strip()
+    model = (model or "").strip()
+
+    if ":" in model:
+        prefix, _, rest = model.partition(":")
+        prefix_lower = prefix.strip().lower()
+        if prefix_lower in PROVIDER_BASE_URLS and rest.strip():
+            return PROVIDER_BASE_URLS[prefix_lower], rest.strip()
+
+    if "generativelanguage" in base_url and not base_url.rstrip("/").endswith("/openai"):
+        base_url = base_url.rstrip("/") + "/openai"
+    return base_url, model
+
+
 def build_providers() -> List[Provider]:
     """Собирает список доступных провайдеров (только те, у которых есть ключ).
 
@@ -81,13 +118,17 @@ def build_providers() -> List[Provider]:
 
     legacy_key = _env("LLM_API_KEY")
     if legacy_key:
+        custom_base, custom_model = resolve_endpoint(
+            _env("LLM_BASE_URL", "https://api.groq.com/openai/v1"),
+            _env("LLM_MODEL", "llama-3.3-70b-versatile"),
+        )
         providers["custom"] = Provider(
             key="custom",
-            label="LLM API (свой ключ)",
+            label=f"LLM API (свой ключ, {custom_base.split('//')[-1].split('/')[0]})",
             kind="openai",
             api_key=legacy_key,
-            base_url=_env("LLM_BASE_URL", "https://api.groq.com/openai/v1"),
-            model=_env("LLM_MODEL", "llama-3.3-70b-versatile"),
+            base_url=custom_base,
+            model=custom_model,
         )
 
     gemini_key = _env("GEMINI_API_KEY") or _env("GOOGLE_API_KEY")
