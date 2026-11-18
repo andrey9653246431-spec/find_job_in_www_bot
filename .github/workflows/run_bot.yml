@@ -80,6 +80,23 @@ jobs:
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           LLM_BASE_URL: ${{ secrets.LLM_BASE_URL || 'https://api.groq.com/openai/v1' }}
           LLM_MODEL: ${{ secrets.LLM_MODEL || 'llama-3.3-70b-versatile' }}
+          # Бесплатные провайдеры для адаптации резюме: достаточно одного ключа.
+          # Имена секретов GitHub: GEMINI_API_KEY, GROQ_API_KEY, CEREBRAS_API_KEY,
+          # MISTRAL_API_KEY, OPENROUTER_API_KEY
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL || 'gemini-2.5-flash' }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_MODEL: ${{ secrets.GROQ_MODEL || 'llama-3.3-70b-versatile' }}
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          CEREBRAS_MODEL: ${{ secrets.CEREBRAS_MODEL || 'gpt-oss-120b' }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          MISTRAL_MODEL: ${{ secrets.MISTRAL_MODEL || 'mistral-large-latest' }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_MODEL: ${{ secrets.OPENROUTER_MODEL || 'openrouter/free' }}
+          LLM_ORDER: ${{ secrets.LLM_ORDER }}
+          LLM_PROVIDER: ${{ secrets.LLM_PROVIDER }}
+          LLM_TIMEOUT: "75"
+          LLM_MAX_INPUT_CHARS: "16000"
           PYTHONUNBUFFERED: "1"
           DB_PATH: data/bot_database.sqlite3
           HTTP_TIMEOUT: "15"
