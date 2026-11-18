@@ -4,6 +4,8 @@
 3. Просмотра загруженного резюме.
 """
 import io
+import re
+
 from aiogram import Bot, F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -14,6 +16,7 @@ from bot.keyboards import (
     get_main_menu_keyboard,
 )
 from bot.services.file_extractor import (
+    build_resume_profile,
     extract_text_from_file_bytes,
     upload_and_register_resume,
 )
@@ -22,6 +25,37 @@ from bot.states import ResumeStates
 
 router = Router(name="resume")
 
+
+
+
+def _profile_report(record: dict) -> str:
+    """Формирует блок «профиль резюме» + подсказки, если данные не распознаны."""
+    role = (record.get("extracted_role") or "").strip()
+    skills = record.get("extracted_skills") or []
+
+    role_line = (
+        f"🎯 **Целевая должность:** {role}"
+        if role
+        else "🎯 **Целевая должность:** ⚠️ не распознана в резюме"
+    )
+    skills_line = (
+        f"🛠 **Ключевые навыки ({len(skills)}):** {', '.join(skills)}"
+        if skills
+        else "🛠 **Ключевые навыки:** ⚠️ не найдены в резюме"
+    )
+
+    hints: list[str] = []
+    if not role:
+        hints.append("• задать должность: `/set_role Коммерческий директор`")
+    if not skills:
+        hints.append("• задать навыки: `/set_skills P&L, Excel, CRM, 1C`")
+    hint_block = (
+        "\n\n💡 **Уточните профиль вручную — иначе поиск вакансий будет неточным:**\n"
+        + "\n".join(hints)
+        if hints
+        else ""
+    )
+    return f"{role_line}\n{skills_line}{hint_block}"
 
 # =============================================================================
 # 1. ОТДЕЛЬНАЯ ФУНКЦИЯ ЗАГРУЗКИ РЕЗЮМЕ
@@ -72,17 +106,11 @@ async def handle_resume_document(
         )
         await state.clear()
 
-        skills_str = (
-            ", ".join(saved["extracted_skills"])
-            if saved["extracted_skills"]
-            else "будут уточнены при адаптации"
-        )
         await status_msg.edit_text(
             "✅ **Резюме успешно загружено и сохранено в базе!**\n\n"
             f"📁 **Файл:** `{file_name}`\n"
-            f"🎯 **Определена целевая должность:** {saved['extracted_role']}\n"
-            f"🛠 **Извлечённые ключевые навыки ({len(saved['extracted_skills'])}):** {skills_str}\n\n"
-            "Что сделаем дальше?",
+            + _profile_report(saved)
+            + "\n\nЧто сделаем дальше?",
             reply_markup=get_after_upload_keyboard(),
             parse_mode="Markdown",
         )
@@ -107,6 +135,8 @@ async def handle_resume_text(
         "🔍 Поиск вакансий",
         "🌐 Источники вакансий",
         "📄 Моё резюме",
+        "🏛 Пример идеального резюме",
+        "🧭 Найти каналы и сайты",
     }
     if raw_text in menu_buttons:
         await state.clear()
@@ -126,16 +156,10 @@ async def handle_resume_text(
         )
         await state.clear()
 
-        skills_str = (
-            ", ".join(saved["extracted_skills"])
-            if saved["extracted_skills"]
-            else "общий профиль"
-        )
         await message.answer(
             "✅ **Текст резюме успешно загружен и проанализирован!**\n\n"
-            f"🎯 **Целевая должность:** {saved['extracted_role']}\n"
-            f"🛠 **Ключевые навыки ({len(saved['extracted_skills'])}):** {skills_str}\n\n"
-            "Выберите следующее действие:",
+            + _profile_report(saved)
+            + "\n\nВыберите следующее действие:",
             reply_markup=get_after_upload_keyboard(),
             parse_mode="Markdown",
         )
@@ -260,17 +284,108 @@ async def cmd_my_resume(message: Message, db: Database) -> None:
         )
         return
 
-    skills = ", ".join(record.get("extracted_skills") or []) or "не выделены"
     has_adapted = "Да ✅" if record.get("adapted_text") else "Ещё не выполнялась (нажмите «✨ Адаптировать резюме»)"
     preview = record["raw_text"][:700] + ("..." if len(record["raw_text"]) > 700 else "")
 
     await message.answer(
         "📄 **Ваш профиль резюме в базе:**\n\n"
-        f"🎯 **Целевая должность:** {record.get('extracted_role')}\n"
-        f"🛠 **Ключевые навыки:** {skills}\n"
-        f"📁 **Источник:** `{record.get('file_name')}`\n"
+        + _profile_report(record)
+        + f"\n📁 **Источник:** `{record.get('file_name')}`\n"
         f"✨ **Адаптация под стандарты рынка:** {has_adapted}\n\n"
         f"**Фрагмент исходного текста:**\n```\n{preview}\n```",
         reply_markup=get_after_upload_keyboard(),
+        parse_mode="Markdown",
+    )
+
+
+# =============================================================================
+# 4. РУЧНАЯ КОРРЕКТИРОВКА ПРОФИЛЯ РЕЗЮМЕ (/set_role, /set_skills)
+# =============================================================================
+
+@router.message(Command("set_role"))
+async def cmd_set_role(message: Message, db: Database) -> None:
+    """Позволяет вручную задать целевую должность (если бот её не распознал)."""
+    raw = (message.text or "").split(maxsplit=1)
+    if len(raw) < 2 or not raw[1].strip():
+        await message.answer(
+            "✏️ **Укажите целевую должность** после команды, например:\n"
+            "`/set_role Коммерческий директор`",
+            parse_mode="Markdown",
+        )
+        return
+
+    role = raw[1].strip()[:120]
+    record = await db.get_resume(message.from_user.id)  # type: ignore
+    if not record:
+        await message.answer(
+            "ℹ️ Сначала загрузите резюме: **📤 Загрузить резюме**.",
+            parse_mode="Markdown",
+        )
+        return
+
+    updated = await db.update_resume_profile(user_id=message.from_user.id, role=role)  # type: ignore
+    await message.answer(
+        "✅ **Целевая должность обновлена!**\n\n"
+        + _profile_report(updated or record)
+        + "\n\nТеперь можно запускать поиск вакансий: `/search`",
+        parse_mode="Markdown",
+    )
+
+
+@router.message(Command("set_skills"))
+async def cmd_set_skills(message: Message, db: Database) -> None:
+    """Позволяет вручную задать ключевые навыки через запятую."""
+    raw = (message.text or "").split(maxsplit=1)
+    if len(raw) < 2 or not raw[1].strip():
+        await message.answer(
+            "✏️ **Укажите навыки через запятую**, например:\n"
+            "`/set_skills P&L, Excel, CRM, 1C, управление командой`",
+            parse_mode="Markdown",
+        )
+        return
+
+    skills = [
+        item.strip()
+        for item in re.split(r"[,;|]+", raw[1])
+        if item.strip()
+    ][:30]
+    if not skills:
+        await message.answer("⚠️ Не удалось разобрать список навыков. Пример: `/set_skills Excel, CRM, 1C`")
+        return
+
+    record = await db.get_resume(message.from_user.id)  # type: ignore
+    if not record:
+        await message.answer(
+            "ℹ️ Сначала загрузите резюме: **📤 Загрузить резюме**.",
+            parse_mode="Markdown",
+        )
+        return
+
+    updated = await db.update_resume_profile(user_id=message.from_user.id, skills=skills)  # type: ignore
+    await message.answer(
+        "✅ **Ключевые навыки обновлены!**\n\n"
+        + _profile_report(updated or record)
+        + "\n\nТеперь можно запускать поиск вакансий: `/search`",
+        parse_mode="Markdown",
+    )
+
+
+@router.message(Command("reset_profile"))
+async def cmd_reset_profile(message: Message, db: Database) -> None:
+    """Повторно извлекает должность и навыки из загруженного резюме автоматически."""
+    record = await db.get_resume(message.from_user.id)  # type: ignore
+    if not record:
+        await message.answer("ℹ️ Резюме пока не загружено.")
+        return
+
+    profile = build_resume_profile(record["raw_text"])
+    updated = await db.update_resume_profile(
+        user_id=message.from_user.id,  # type: ignore
+        role=profile["role"],
+        skills=profile["skills"],
+    )
+    await message.answer(
+        "🔄 **Профиль пересобран автоматически.**\n\n"
+        + _profile_report(updated or record),
         parse_mode="Markdown",
     )

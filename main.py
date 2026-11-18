@@ -8,6 +8,7 @@ from aiogram.types import BotCommand
 from bot.config import config
 from bot.database import Database
 from bot.handlers import register_all_routers
+from bot.services.file_extractor import repair_invalid_resume_profiles
 
 
 async def setup_bot_commands(bot: Bot) -> None:
@@ -24,6 +25,9 @@ async def setup_bot_commands(bot: Bot) -> None:
         BotCommand(command="sources", description="🌐 База источников (сайты и ТГ-каналы)"),
         BotCommand(command="add_source", description="➕ Добавить новый сайт или ТГ-канал"),
         BotCommand(command="my_resume", description="📄 Просмотреть загруженное резюме"),
+        BotCommand(command="set_role", description="✏️ Указать целевую должность вручную"),
+        BotCommand(command="set_skills", description="✏️ Указать ключевые навыки вручную"),
+        BotCommand(command="reset_profile", description="🔄 Пересобрать профиль из резюме"),
         BotCommand(command="help", description="📖 Справка по функциям"),
     ]
     await bot.set_my_commands(commands)
@@ -48,6 +52,11 @@ async def main() -> None:
     db = Database(config.db_path)
     await db.init_db()
     logger.info("База данных SQLite инициализирована: %s", config.db_path)
+
+    # Авто-починка профилей, где вместо должности/навыков ранее сохранилось ФИО
+    repaired = await repair_invalid_resume_profiles(db)
+    if repaired:
+        logger.info("Исправлено профилей резюме (ФИО вместо должности/навыков): %d", repaired)
 
     bot = Bot(token=config.bot_token)
     dp = Dispatcher(storage=MemoryStorage())

@@ -447,8 +447,17 @@ async def search_vacancies_by_resume(
             "Резюме не найдено! Сначала загрузите резюме через меню «📤 Загрузить резюме»."
         )
 
-    role: str = resume.get("extracted_role") or "Специалист"
+    role: str = (resume.get("extracted_role") or "").strip()
     skills: List[str] = resume.get("extracted_skills") or []
+
+    if not role and not skills:
+        raise ValueError(
+            "В профиле резюме не определена ни должность, ни навыки — искать не по чему.\n"
+            "Укажите их вручную:\n"
+            "• `/set_role Коммерческий директор`\n"
+            "• `/set_skills P&L, Excel, CRM, 1C`\n"
+            "или пересоберите профиль командой `/reset_profile`."
+        )
     sources = await db.list_sources(active_only=True)
 
     now_utc = datetime.now(timezone.utc)
@@ -510,7 +519,7 @@ def format_vacancies_search_message(search_result: Dict[str, Any]) -> str:
 
     header = (
         f"🔍 **Результаты поиска вакансий за {period_label}**\n"
-        f"👤 **Профиль резюме:** {role}\n"
+        f"👤 **Профиль резюме:** {role or 'не указана (задайте /set_role)'}\n"
         f"🛠 **Ключевые навыки:** {skills_preview}\n"
         f"📡 **Проверено источников в БД:** {sources_checked}\n"
         f"📊 **Найдено подходящих вакансий:** {total_found}\n"

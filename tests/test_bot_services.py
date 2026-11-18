@@ -495,3 +495,119 @@ def test_search_assistant_intent_and_formats() -> None:
             assert url in allowed_urls or url.startswith(allowed_prefixes), (
                 f"Ссылка не из каталога: {url}"
             )
+
+
+@pytest.mark.asyncio
+async def test_resume_profile_never_uses_name_as_role_or_skills(db: Database) -> None:
+    """Тест 7 (регресс бага из продакшена): ФИО из резюме не должно попадать
+    ни в целевую должность, ни в ключевые навыки.
+    """
+    from bot.services.file_extractor import build_resume_profile
+
+    user_id = 401
+    # Резюме без строки «Должность:» и без блока «Навыки:» — ровно тот случай,
+    # когда бот раньше подставлял ФИО и как должность, и как навыки.
+    raw_resume = (
+        "Смирнов Алексей\n"
+        "Москва\n"
+        "Телефон: +7 900 000-00-00, smirnov@example.com\n"
+        "О себе: работал в компании X, занимался продажами и отчётностью.\n"
+    )
+    await upload_and_register_resume(db=db, user_id=user_id, raw_text=raw_resume)
+    record = await db.get_resume(user_id)
+
+    assert record["extracted_role"] == "", "ФИО не должно становиться целевой должностью"
+    assert record["extracted_skills"] == [], "ФИО не должно становиться ключевым навыком"
+    # ФИО хранится только в исходном тексте, но не в профиле поиска
+    assert "Смирнов" not in (record["extracted_role"] or "")
+    assert all("Смирнов" not in skill for skill in record["extracted_skills"])
+
+    # Профиль определяется отдельной функцией и не содержит имени
+    profile = build_resume_profile(raw_resume)
+    assert profile["candidate_name"] == "Смирнов Алексей"
+    assert profile["role"] == ""
+    assert profile["skills"] == []
+
+
+@pytest.mark.asyncio
+async def test_resume_profile_extraction_and_manual_override(db: Database) -> None:
+    """Тест 8: корректное извлечение должности/навыков (включая многострочный блок
+    «Навыки») и ручная корректировка через update_resume_profile (/set_role, /set_skills).
+    """
+    from bot.services.file_extractor import build_resume_profile
+
+    user_id = 402
+    raw_resume = (
+        "Иванов Иван Иванович\n"
+        "Москва, +7 999 123-45-67, ivanov@example.com\n"
+        "Навыки:\n"
+        "Excel, 1С\n"
+        "CRM, KPI\n"
+        "Опыт работы:\n"
+        "ООО Ромашка — коммерческий директор (2018-2026)\n"
+        "- Увеличил выручку на 30%.\n"
+    )
+    await upload_and_register_resume(db=db, user_id=user_id, raw_text=raw_resume)
+    record = await db.get_resume(user_id)
+
+    assert record["extracted_role"].lower() == "коммерческий директор"
+    skills_lower = [s.lower() for s in record["extracted_skills"]]
+    assert "excel" in skills_lower and "crm" in skills_lower and "1c" in skills_lower
+    assert all("иван" not in s for s in skills_lower)
+
+    profile = build_resume_profile(raw_resume)
+    assert profile["candidate_name"] == "Иванов Иван Иванович"
+
+    # Ручное уточнение профиля (аналог команд /set_role и /set_skills)
+    updated = await db.update_resume_profile(
+        user_id=user_id, role="Директор по развитию", skills=["P&L", "Excel", "CRM"]
+    )
+    assert updated["extracted_role"] == "Директор по развитию"
+    assert updated["extracted_skills"] == ["P&L", "Excel", "CRM"]
+
+    # Резюме и текст при этом не теряются
+    assert "Ромашка" in updated["raw_text"]
+
+
+@pytest.mark.asyncio
+async def test_repair_legacy_broken_profile(db: Database) -> None:
+    """Тест 9: авто-починка ранее сохранённого «сломанного» профиля,
+    где вместо должности и навыков было записано ФИО (случай из продакшена).
+    """
+    from bot.services.file_extractor import (
+        repair_invalid_resume_profiles,
+        repair_profile_values,
+    )
+
+    user_id = 403
+    raw_resume = (
+        "Кузнецов Дмитрий Сергеевич\n"
+        "Москва, +7 900 111-22-33\n"
+        "Опыт работы:\n"
+        "ООО Вектор — руководитель отдела продаж (2019-2026)\n"
+        "- Выстроил отдел с нуля, выполнение плана 112%.\n"
+    )
+    await upload_and_register_resume(db=db, user_id=user_id, raw_text=raw_resume)
+
+    # Имитируем старую (сломанную) запись: ФИО и в роли, и в навыках
+    await db.update_resume_profile(
+        user_id=user_id,
+        role="Кузнецов Дмитрий Сергеевич",
+        skills=["Кузнецов", "Дмитрий", "Сергеевич"],
+    )
+
+    role, skills, repaired = repair_profile_values(
+        role="Кузнецов Дмитрий Сергеевич",
+        skills=["Кузнецов", "Дмитрий", "Сергеевич"],
+        raw_text=raw_resume,
+    )
+    assert repaired is True
+    assert role.lower() == "руководитель отдела продаж"
+    assert all("кузнецов" not in s.lower() for s in skills)
+
+    # Авто-починка по всей базе при старте бота
+    fixed = await repair_invalid_resume_profiles(db)
+    assert fixed >= 1
+    record = await db.get_resume(user_id)
+    assert record["extracted_role"].lower() == "руководитель отдела продаж"
+    assert all("кузнецов" not in s.lower() for s in record["extracted_skills"])

@@ -205,6 +205,53 @@ class Database:
             )
             await db.commit()
 
+    async def list_all_resumes(self) -> List[Dict[str, Any]]:
+        """Возвращает все сохранённые резюме (используется для авто-починки профилей)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT * FROM users_resumes") as cursor:
+                rows = await cursor.fetchall()
+        results: List[Dict[str, Any]] = []
+        for row in rows:
+            data = dict(row)
+            try:
+                data["extracted_skills"] = json.loads(data.get("extracted_skills") or "[]")
+            except json.JSONDecodeError:
+                data["extracted_skills"] = []
+            results.append(data)
+        return results
+
+    async def update_resume_profile(
+        self,
+        user_id: int,
+        role: Optional[str] = None,
+        skills: Optional[List[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Обновляет целевую должность и/или ключевые навыки в профиле резюме.
+
+        Нужен, когда автоматическое извлечение не справилось (например, в резюме
+        не было ни названия должности, ни блока навыков).
+        """
+        record = await self.get_resume(user_id)
+        if not record:
+            return None
+
+        new_role = role if role is not None else record.get("extracted_role") or ""
+        new_skills = skills if skills is not None else record.get("extracted_skills") or []
+
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE users_resumes SET extracted_role = ?, extracted_skills = ?, updated_at = ? WHERE user_id = ?",
+                (
+                    new_role,
+                    json.dumps(new_skills, ensure_ascii=False),
+                    datetime.now(timezone.utc).isoformat(),
+                    user_id,
+                ),
+            )
+            await db.commit()
+        return await self.get_resume(user_id)
+
     async def get_resume(self, user_id: int) -> Optional[Dict[str, Any]]:
         """Возвращает сохранённое резюме пользователя."""
         async with aiosqlite.connect(self.db_path) as db:
