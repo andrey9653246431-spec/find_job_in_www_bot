@@ -22,7 +22,7 @@ from bot.services.file_extractor import (
     upload_and_register_resume,
 )
 from bot.services.market_standards import adapt_resume_to_market_standards
-from bot.services.message_utils import escape_markdown
+from bot.services.message_utils import MAX_MESSAGE_LENGTH, escape_markdown, split_message
 from bot.states import ResumeStates
 
 router = Router(name="resume")
@@ -230,14 +230,15 @@ async def _run_adaptation_flow(message: Message, user_id: int, db: Database) -> 
             "━━━━━━━━━━━━━━━━━━━━\n\n"
         )
 
-        # Отправляем текст адаптированного резюме (с учётом лимита длины сообщения Telegram 4096 символов)
-        full_text = report_header + adapted_text
-        if len(full_text) <= 4000:
-            await wait_msg.edit_text(full_text)
-        else:
-            await wait_msg.edit_text(report_header[:4000])
-            for chunk_start in range(0, len(adapted_text), 3800):
-                await message.answer(adapted_text[chunk_start : chunk_start + 3800])
+        # Текст адаптированного резюме уходит обычным текстом (без parse_mode):
+        # из него уже убраны ##/**/эмодзи, резать «вслепую» нельзя — только по строкам.
+        full_text = f"{report_header}{adapted_text}"
+        chunks = split_message(full_text, limit=MAX_MESSAGE_LENGTH) or [full_text]
+        for index, chunk in enumerate(chunks):
+            if index == 0:
+                await wait_msg.edit_text(chunk)
+            else:
+                await message.answer(chunk)
 
         # Имя файла зависит от активного стандарта: для «Золотого стандарта» —
         # Executive CV (Framework 2026+), иначе универсальное имя.

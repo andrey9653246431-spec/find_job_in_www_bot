@@ -18,6 +18,7 @@ from docx.shared import Pt
 from bot.config import config
 from bot.database import Database
 from bot.services import llm_client
+from bot.services.text_cleanup import clean_ai_artifacts
 from bot.services.llm_client import LLMResult, generate_text
 
 # =============================================================================
@@ -1372,8 +1373,11 @@ async def _rewrite_resume_via_free_llm(
         "Если метрики нет — оставь место для уточнения: «[уточнить: доля выручки]».\n"
         "- Формулировки результатов: глагол действия + метрика + механизм/влияние.\n"
         "- Язык — русский, деловой, без канцелярита и местоимения «я».\n"
-        "- Выведи ТОЛЬКО готовое резюме в Markdown (заголовки разделов через ##), "
-        "без вступлений, пояснений и вопросов."
+        "- Пиши обычным текстом, БЕЗ Markdown: никаких «#», «**», «__», обратных "
+        "кавычек и таблиц. Названия разделов — ЗАГЛАВНЫМИ БУКВАМИ в отдельной строке.\n"
+        "- Пункты начинай символом «•» (не «-» и не «*»).\n"
+        "- Не используй длинное тире «—», эмодзи и вступления вроде «Вот готовое резюме».\n"
+        "- Выведи ТОЛЬКО текст резюме, без пояснений и вопросов."
     )
 
     user_prompt = (
@@ -1414,14 +1418,14 @@ async def adapt_resume_to_market_standards(
         extracted_skills=extracted_skills,
         standards=standards,
     )
-    adapted_text = llm_result.text if llm_result else None
+    raw_adapted = llm_result.text if llm_result else None
     if llm_result:
         engine_used = f"Бесплатная LLM: {llm_result.engine_label}"
     else:
         engine_used = "Архитектор Executive CV (Framework 2026+ Золотой стандарт, локальный)"
 
-    if not adapted_text:
-        adapted_text = _rewrite_resume_locally(
+    if not raw_adapted:
+        raw_adapted = _rewrite_resume_locally(
             raw_text=raw_text,
             extracted_role=extracted_role,
             extracted_skills=extracted_skills,
@@ -1429,8 +1433,12 @@ async def adapt_resume_to_market_standards(
             audit=audit,
         )
 
+    # Снимаем «признаки ИИ»: ##, **, обратные кавычки, эмодзи, мета-фразы.
+    # В .docx отдаём тоже очищенный текст, чтобы разметка не всплыла в файле.
+    adapted_text = clean_ai_artifacts(raw_adapted)
+
     await db.save_adapted_resume(user_id=user_id, adapted_text=adapted_text)
-    docx_bytes = build_adapted_resume_docx_bytes(adapted_text)
+    docx_bytes = build_adapted_resume_docx_bytes(raw_adapted)
 
     return {
         "adapted_text": adapted_text,
@@ -1451,24 +1459,19 @@ def build_adapted_resume_docx_bytes(adapted_markdown: str) -> bytes:
     style.font.name = "Arial"
     style.font.size = Pt(10.5)
 
-    for line in adapted_markdown.splitlines():
+    from bot.services.text_cleanup import clean_ai_artifacts as _clean
+
+    for line in _clean(adapted_markdown).splitlines():
         stripped = line.strip()
         if not stripped:
             continue
-        if stripped.startswith("# "):
-            doc.add_heading(stripped[2:].strip(), level=1)
-        elif stripped.startswith("## "):
-            doc.add_heading(stripped[3:].strip(), level=2)
-        elif stripped.startswith("### "):
-            doc.add_heading(stripped[4:].strip(), level=3)
-        elif stripped.startswith("• ") or stripped.startswith("- "):
-            clean_bullet = stripped[2:].replace("**", "")
-            doc.add_paragraph(clean_bullet, style="List Bullet")
-        elif stripped == "---":
-            continue
+        if stripped.startswith("• "):
+            doc.add_paragraph(stripped[2:].strip(), style="List Bullet")
+        elif stripped.isupper() and len(stripped) <= 60:
+            # раздел резюме — заглавными буквами без «#»
+            doc.add_heading(stripped, level=2)
         else:
-            clean_p = stripped.strip("_").replace("**", "")
-            doc.add_paragraph(clean_p)
+            doc.add_paragraph(stripped)
 
     buf = io.BytesIO()
     doc.save(buf)

@@ -365,12 +365,13 @@ async def test_gold_standard_multi_role_and_clean_ats_keywords(db: Database) -> 
     assert "Senior-level руководитель (COO)" in cv_text
 
     # 2. Обратный хронологический порядок: две роли с периодами из шапки компании
-    assert "**Период:** 2022 — 2026" in cv_text
-    assert "**Период:** 2015 — 2022" in cv_text
-    assert cv_text.index("2022 — 2026") < cv_text.index("2015 — 2022")
+    assert "Период: 2022 – 2026" in cv_text
+    assert "Период: 2015 – 2022" in cv_text
+    assert "**" not in cv_text and "##" not in cv_text
+    assert cv_text.index("2022 – 2026") < cv_text.index("2015 – 2022")
 
-    # 3. Scope без служебного ярлыка «Scope:»
-    assert "**Scope (Область охвата):** операционная модель, P&L, сеть хабов" in cv_text
+    # 3. Scope без служебного ярлыка «Scope:» и без жирного шрифта
+    assert "Scope (Область охвата): операционная модель, P&L, сеть хабов" in cv_text
 
     # 4. ATS-облако: каноничная лексика вместо сырых дублей («P&L» -> «P&L Management»)
     assert "P&L Management" in cv_text
@@ -2154,7 +2155,9 @@ async def test_adaptation_reports_llm_model(monkeypatch, db: Database) -> None:
     )
     result = await market_standards.adapt_resume_to_market_standards(db=db, user_id=720)
 
-    assert result["adapted_text"] == _GOOD_ANSWER
+    assert "ПРОФЕССИОНАЛЬНЫЙ ОПЫТ" in result["adapted_text"]
+    assert "##" not in result["adapted_text"] and "**" not in result["adapted_text"]
+    assert "• Вывел продукт на рынок" in result["adapted_text"]
     assert "Бесплатная LLM" in result["engine_used"]
     assert "llama-3.3-70b-versatile" in result["engine_used"]
     assert result["docx_bytes"][:2] == b"PK", "должен собраться .docx"
@@ -2250,3 +2253,117 @@ async def test_gemini_via_openai_compat_endpoint(monkeypatch) -> None:
     assert seen["url"] == "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
     assert seen["auth"] == "Bearer AIza-test-key"
     assert seen["model"] == "gemini-2.5-flash"
+
+
+# =============================================================================
+# Чистый текст резюме: без признаков ИИ (##, **, эмодзи, мета-фразы)
+# =============================================================================
+
+def test_clean_ai_artifacts_removes_markdown_and_ai_tells() -> None:
+    """Тест 57: из текста убираются ##, **, обратные кавычки, эмодзи, тире и мета-фразы."""
+    from bot.services.text_cleanup import clean_ai_artifacts, has_markdown_artifacts
+
+    sample = (
+        "Конечно! Вот готовое резюме:\n\n"
+        "## 🎯 ЦЕЛЬ\n"
+        "**Руководитель продукта** — развитие B2B-продуктов — 8 лет опыта.\n\n"
+        "### Опыт работы\n"
+        "**ООО «Ромашка»** — Руководитель продукта (2021 — н.в.)\n"
+        "- Вывел 3 продукта на рынок — выручка **+38%** год к году\n"
+        "* Команда 25 человек: `product`, аналитика, дизайн\n\n"
+        "---\n"
+        "| Метрика | Значение |\n|---|---|\n| Выручка | 450 млн ₽ |\n\n"
+        "[Портфолио](https://example.com/portfolio)\n\n"
+        "Надеюсь, это поможет! Если нужно — могу усилить блок «Достижения».\n"
+    )
+    cleaned = clean_ai_artifacts(sample)
+
+    assert cleaned.startswith("ЦЕЛЬ"), "первая строка — раздел без эмодзи"
+    assert "##" not in cleaned
+    assert "**" not in cleaned
+    assert "`" not in cleaned
+    assert "—" not in cleaned, "длинные тире заменяются"
+    assert "Конечно" not in cleaned and "Вот готовое резюме" not in cleaned
+    assert "Надеюсь" not in cleaned and "могу усилить" not in cleaned
+    assert "Руководитель продукта – развитие B2B-продуктов" in cleaned
+    assert "• Вывел 3 продукта на рынок – выручка +38% год к году" in cleaned
+    assert "• Команда 25 человек: product, аналитика, дизайн" in cleaned
+    assert "Выручка • 450 млн ₽" in cleaned
+    assert "Портфолио (https://example.com/portfolio)" in cleaned
+    assert has_markdown_artifacts(cleaned) is False
+
+
+def test_clean_ai_artifacts_keeps_resume_content_and_placeholders() -> None:
+    """Тест 58: чистка не портит смысл: заголовки, метрики и «[уточнить: …]» остаются."""
+    from bot.services.text_cleanup import clean_ai_artifacts
+
+    text = (
+        "## ПРОФИЛЬ (Executive Summary)\n"
+        "Директор по маркетингу с опытом 12+ лет.\n"
+        "• Рост выручки на 38% [уточнить: база сравнения]\n"
+    )
+    cleaned = clean_ai_artifacts(text)
+
+    assert cleaned.splitlines()[0] == "ПРОФИЛЬ (Executive Summary)"
+    assert "Директор по маркетингу с опытом 12+ лет." in cleaned
+    assert "[уточнить: база сравнения]" in cleaned, "подсказки человеку сохраняются"
+
+    # при желании подсказки можно убрать
+    without = clean_ai_artifacts(text, keep_placeholders=False)
+    assert "[уточнить" not in without
+
+
+@pytest.mark.asyncio
+async def test_adapted_resume_has_no_ai_markup(monkeypatch, db: Database) -> None:
+    """Тест 59: в результате адаптации и в .docx нет ##/**/эмодзи, даже если модель их вернула."""
+    import io
+
+    from docx import Document
+
+    from bot.services import llm_client, market_standards
+    from bot.services.text_cleanup import has_markdown_artifacts
+
+    llm_answer = (
+        "Вот готовое резюме:\n\n"
+        "## 🎯 ЦЕЛЬ\n"
+        "**Руководитель продукта** — 8 лет в продуктовой разработке.\n\n"
+        "## ОПЫТ РАБОТЫ\n"
+        "**ООО «Ромашка»** — Руководитель продукта (2021 — н.в.)\n"
+        "- Вывел 3 продукта, выручка **+38%** год к году\n"
+        "- Команда `25` человек\n\n"
+        "Надеюсь, это поможет!\n"
+    )
+
+    async def fake_generate(system_prompt, user_prompt, **kwargs):
+        return llm_client.LLMResult(
+            text=llm_answer,
+            provider_label="Groq (free tier)",
+            model="llama-3.3-70b-versatile",
+            attempts=["Groq (free tier): OK"],
+        )
+
+    monkeypatch.setattr(market_standards, "generate_text", fake_generate)
+
+    await db.save_resume(
+        user_id=730,
+        raw_text="Иванов Иван\nРуководитель продукта\nВывел 3 продукта.\n",
+        extracted_role="Руководитель продукта",
+        extracted_skills=["Product Management"],
+    )
+    result = await market_standards.adapt_resume_to_market_standards(db=db, user_id=730)
+    text = result["adapted_text"]
+
+    assert "##" not in text and "**" not in text and "`" not in text
+    assert "🎯" not in text
+    assert "—" not in text, "длинные тире не остаются"
+    assert "Надеюсь" not in text and "Вот готовое резюме" not in text
+    assert "ЦЕЛЬ" in text and "ОПЫТ РАБОТЫ" in text
+    assert "• Вывел 3 продукта, выручка +38% год к году" in text
+    assert has_markdown_artifacts(text) is False
+
+    # то же и в файле .docx
+    document = Document(io.BytesIO(result["docx_bytes"]))
+    docx_text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+    assert "##" not in docx_text and "**" not in docx_text and "—" not in docx_text
+    assert "ЦЕЛЬ" in docx_text and "ОПЫТ РАБОТЫ" in docx_text
+    assert has_markdown_artifacts(docx_text) is False
