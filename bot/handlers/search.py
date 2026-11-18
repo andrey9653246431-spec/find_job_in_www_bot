@@ -7,7 +7,9 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 from bot.database import Database
+from bot.handlers.messaging import safe_answer, safe_edit_text, send_long_message
 from bot.keyboards import get_search_period_keyboard
+from bot.services.message_utils import split_message
 from bot.services.vacancy_parser import (
     format_vacancies_search_blocks,
     search_vacancies_by_resume,
@@ -97,32 +99,37 @@ async def cb_execute_search_by_period(
         )
         body, footer = format_vacancies_search_blocks(search_result)
 
-        if len(body) + len(footer) <= 4000:
-            await status_msg.edit_text(
+        keyboard = get_search_period_keyboard()
+
+        if len(body) + len(footer) <= 3900:
+            await safe_edit_text(
                 f"{body}\n{footer}",
-                reply_markup=get_search_period_keyboard(),
+                status_msg,
+                reply_markup=keyboard,
                 parse_mode="Markdown",
                 disable_web_page_preview=True,
             )
         else:
-            # Длинный список: отправляем основную часть и отдельно подвал,
-            # чтобы предупреждения и дисклеймер не обрезались.
-            # Обрезаем по границе вакансии, чтобы не рвать карточку посередине
-            cut = body[:3900]
-            boundary = cut.rfind("\n\n**")
-            if boundary > 1000:
-                cut = cut[:boundary]
-            await status_msg.edit_text(
-                cut + "\n…",
+            # Длинный список: режем ТОЛЬКО по границам строк (split_message),
+            # иначе Telegram отвечает «can't find end of the entity» на обрезанном
+            # посередине `**жирном**` или `[ссылке](url)`.
+            await send_long_message(
+                body,
+                status_msg,
                 parse_mode="Markdown",
                 disable_web_page_preview=True,
             )
-            await callback.message.answer(
-                footer.strip()[:4000],
-                reply_markup=get_search_period_keyboard(),
-                parse_mode="Markdown",
-                disable_web_page_preview=True,
-            )
+            # Подвал (предупреждения + ручные площадки + дисклеймер) — отдельными
+            # сообщениями с клавиатурой на последнем, чтобы дисклеймер не потерялся.
+            footer_chunks = split_message(footer.strip(), limit=3900) or [""]
+            for index, chunk in enumerate(footer_chunks, start=1):
+                await safe_answer(
+                    chunk,
+                    status_msg,
+                    parse_mode="Markdown",
+                    disable_web_page_preview=True,
+                    reply_markup=keyboard if index == len(footer_chunks) else None,
+                )
     except ValueError as exc:
         await status_msg.edit_text(f"⚠️ {exc}")
     except Exception as exc:

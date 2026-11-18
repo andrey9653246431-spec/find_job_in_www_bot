@@ -725,8 +725,10 @@ def test_source_issues_are_reported_in_message() -> None:
         ],
     }
     message = format_vacancies_search_message(result)
+    # ники и URL экранируются (`devops\_jobs`), поэтому сравниваем без слешей
+    plain = message.replace("\\", "")
     assert "не удалось прочитать" in message
-    assert "devops_jobs" in message
+    assert "devops_jobs" in plain
     assert "веб-превью" in message
 
 
@@ -1108,3 +1110,150 @@ def test_trudvsem_api_parser() -> None:
     # пустой ответ и битый JSON не ломают поиск
     assert parse_trudvsem_api("{}", {"canonical_url": "https://trudvsem.ru"}, "роль", [], cutoff) == []
     assert parse_trudvsem_api("не json", {"canonical_url": "https://trudvsem.ru"}, "роль", [], cutoff) == []
+
+
+# =============================================================================
+# Длинные сообщения и Markdown-сущности (ошибка «can't find end of the entity»)
+# =============================================================================
+
+def test_split_message_never_breaks_entities() -> None:
+    """Тест 23: длинный текст режется по строкам — сущности остаются целыми."""
+    from bot.services.message_utils import has_broken_entities, split_message
+
+    text = "\n".join(
+        f"**{i}. Директор по маркетингу** — [открыть](https://t.me/x/{i}) — описание вакансии"
+        for i in range(1, 200)
+    )
+    chunks = split_message(text, limit=1000)
+
+    assert len(chunks) > 1
+    assert all(len(chunk) <= 1000 for chunk in chunks)
+    assert all(not has_broken_entities(chunk) for chunk in chunks)
+    # ни одна строка не потерялась и порядок сохранён
+    restored = "\n".join(chunks).split("\n")
+    assert len(restored) == len(text.split("\n"))
+    assert restored[0].startswith("**1.")
+
+
+def test_split_message_handles_overlong_line() -> None:
+    """Тест 24: строка длиннее лимита режется с потерей разметки, но без «половинок»."""
+    from bot.services.message_utils import has_broken_entities, split_message
+
+    long_line = "**важно** " + "текст " * 300
+    chunks = split_message(long_line, limit=500)
+
+    assert all(len(chunk) <= 500 for chunk in chunks)
+    assert all(not has_broken_entities(chunk) for chunk in chunks)
+    assert "важно" in chunks[0]
+
+
+def test_vacancy_title_and_source_are_markdown_escaped() -> None:
+    """Тест 25: названия с `[`, `]`, `*`, `_` не ломают разметку выдачи."""
+    from datetime import datetime, timezone
+
+    from bot.services.message_utils import has_broken_entities
+    from bot.services.vacancy_parser import format_vacancies_search_blocks
+
+    result = {
+        "period_days": 7,
+        "period_label": "1 неделя",
+        "role": "Директор [по маркетингу]",
+        "skills": ["бренд_менеджмент", "CRM*"],
+        "sources_checked": 10,
+        "total_found": 1,
+        "vacancies": [
+            {
+                "title": "Вакансия [топ] *срочно*",
+                "url": "https://t.me/toplevel_job/1",
+                "source_title": "TG: TOP LEVEL JOB [топ вакансии] (@toplevel_job)",
+                "source_type": "tg_channel",
+                "published_at": datetime.now(timezone.utc),
+                "matched_skills": ["бренд_менеджмент"],
+                "relevance_score": 30,
+                "snippet": "описание с подчёркиванием job_in_hr и [скобкой]",
+            }
+        ],
+        "source_issues": [],
+        "manual_sources": [],
+    }
+    body, footer = format_vacancies_search_blocks(result)
+
+    assert not has_broken_entities(body), body
+    assert not has_broken_entities(footer), footer
+    plain_body = body.replace("\\", "")
+    assert "TOP LEVEL JOB [топ вакансии]" in plain_body
+
+
+def test_prepare_text_disables_markup_for_broken_text() -> None:
+    """Тест 26: при незакрытой сущности текст уходит без parse_mode (без ошибки 400)."""
+    from bot.handlers.messaging import prepare_text
+
+    text, mode = prepare_text("**жирный** и /find_resources", "Markdown")
+    assert mode is None
+    assert "**" not in text
+
+    text, mode = prepare_text("**жирный** и `код`", "Markdown")
+    assert mode == "Markdown"
+    assert text == "**жирный** и `код`"
+
+
+@pytest.mark.asyncio
+async def test_long_search_result_is_sent_in_safe_chunks() -> None:
+    """Тест 27: длинная выдача отправляется частями ≤ лимита и без «половинок» сущностей."""
+    from datetime import datetime, timezone
+
+    from bot.handlers.messaging import send_long_message
+    from bot.services.message_utils import has_broken_entities
+    from bot.services.vacancy_parser import format_vacancies_search_blocks
+
+    vacancies = [
+        {
+            "title": f"Вакансия {i} — компания",
+            "url": f"https://t.me/toplevel_job/{i}",
+            "source_title": "TG: TOP LEVEL JOB [топ вакансии] (@toplevel_job)",
+            "source_type": "tg_channel",
+            "published_at": datetime.now(timezone.utc),
+            "matched_skills": ["маркетинг"],
+            "relevance_score": 30,
+            "snippet": "описание вакансии",
+        }
+        for i in range(1, 60)
+    ]
+    body, footer = format_vacancies_search_blocks(
+        {
+            "period_days": 7,
+            "period_label": "1 неделя",
+            "role": "Директор по маркетингу",
+            "skills": ["маркетинг"],
+            "sources_checked": 100,
+            "total_found": len(vacancies),
+            "vacancies": vacancies,
+            "source_issues": [],
+            "manual_sources": [],
+        }
+    )
+    assert len(body) > 3900, "для теста нужна выдача длиннее лимита Telegram"
+
+    class FakeMessage:
+        """Минимальная заглушка aiogram.Message: только edit_text/answer."""
+
+        def __init__(self) -> None:
+            self.sent: list = []
+
+        async def edit_text(self, text, **kwargs):
+            self.sent.append(("edit", text, kwargs))
+            return self
+
+        async def answer(self, text, **kwargs):
+            self.sent.append(("answer", text, kwargs))
+            return self
+
+    fake = FakeMessage()
+    await send_long_message(body, fake, parse_mode="Markdown")
+
+    assert len(fake.sent) > 1, "длинная выдача должна уйти несколькими сообщениями"
+    for _, text, kwargs in fake.sent:
+        assert len(text) <= 3900
+        assert not has_broken_entities(text)
+        if kwargs.get("parse_mode") == "Markdown":
+            assert has_broken_entities(text) is False

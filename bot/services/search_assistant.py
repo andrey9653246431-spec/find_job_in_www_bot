@@ -17,6 +17,7 @@ import re
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
+from bot.services.message_utils import escape_markdown
 from bot.services.resource_catalog import (
     AGGREGATORS,
     COMPANIES,
@@ -150,8 +151,9 @@ def format_telegram_channels_block(query: str = "") -> str:
         url = _verified_tg_url(channel["username"])
         warning = "" if channel.get("verified", True) else f" _{LINK_WARNING}_"
         lines.append(
-            f"{idx}. **[{channel['name']}]({url})** | _{channel['topic']}_ | "
-            f"*{channel['description']}*{warning}"
+            f"{idx}. **[{escape_markdown(channel['name'])}]({url})** | "
+            f"_{escape_markdown(channel['topic'])}_ | "
+            f"*{escape_markdown(channel['description'])}*{warning}"
         )
     lines.extend(["", f"💡 {TELEGRAM_SEARCH_HINT}"])
     return "\n".join(lines)
@@ -167,8 +169,9 @@ def format_aggregators_block(query: str = "") -> str:
     for idx, aggregator in enumerate(aggregators[:MAX_ITEMS_PER_BLOCK], start=1):
         warning = "" if aggregator.get("verified", True) else f" _{LINK_WARNING}_"
         lines.append(
-            f"{idx}. **{aggregator['name']}** — [{aggregator['url']}]({aggregator['url']}) | "
-            f"*{aggregator['description']}*{warning}"
+            f"{idx}. **{escape_markdown(aggregator['name'])}** — "
+            f"[{aggregator['url']}]({aggregator['url']}) | "
+            f"*{escape_markdown(aggregator['description'])}*{warning}"
         )
     return "\n".join(lines)
 
@@ -205,8 +208,10 @@ def format_companies_blocks(limit: Optional[int] = None, industry: Optional[str]
             career_label = "Карьера" if company.get("career_url") else "Вакансии на hh.ru"
             note = "" if company.get("career_url") else f" _{LINK_WARNING}_"
             blocks.append(
-                f"{counter}. **{company['name']}** — [{company['site']}]({company['site']}) | "
-                f"[{career_label}]({career_url}) | *{company['description']}*{note}"
+                f"{counter}. **{escape_markdown(company['name'])}** — "
+                f"[{company['site']}]({company['site']}) | "
+                f"[{career_label}]({career_url}) | "
+                f"*{escape_markdown(company['description'])}*{note}"
             )
         blocks.append("")
     return "\n".join(blocks).strip()

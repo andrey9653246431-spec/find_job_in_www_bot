@@ -15,6 +15,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
+from bot.handlers.messaging import safe_answer
 from bot.keyboards import get_resource_search_keyboard
 from bot.services.search_assistant import (
     SEARCH_TYPE_AGGREGATORS,
@@ -62,7 +63,12 @@ async def _send_search_answer(message: Message, query: str, search_type: str | N
     parts = answer["parts"]
     for index, part in enumerate(parts, start=1):
         suffix = f"\n\n_Часть {index} из {len(parts)}_" if len(parts) > 1 else ""
-        await message.answer(part + suffix, parse_mode="Markdown", disable_web_page_preview=True)
+        await safe_answer(
+            part + suffix,
+            message,
+            parse_mode="Markdown",
+            disable_web_page_preview=True,
+        )
 
 
 @router.message(Command("find_resources"))
@@ -86,8 +92,9 @@ async def cmd_find_resources(message: Message, state: FSMContext) -> None:
         "• `ТОП-100 компаний`\n"
         "• `вакансии аналитик данных`"
     )
-    await message.answer(
+    await safe_answer(
         text,
+        message,
         reply_markup=get_resource_search_keyboard(),
         parse_mode="Markdown",
         disable_web_page_preview=True,

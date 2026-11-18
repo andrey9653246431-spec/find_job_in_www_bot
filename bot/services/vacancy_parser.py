@@ -20,6 +20,7 @@ import aiohttp
 from bs4 import BeautifulSoup
 from bot.config import config
 from bot.database import Database
+from bot.services.message_utils import escape_markdown
 from bot.services.resource_catalog import LINKS_DISCLAIMER
 
 PERIOD_LABELS: Dict[int, str] = {
@@ -829,9 +830,13 @@ def _format_source_issues(issues: List[Dict[str, Any]], limit: int = 5) -> str:
         return ""
     lines = ["", "━━━━━━━━━━━━━━━━━━━━", "⚠️ **Часть источников не удалось прочитать:**"]
     for issue in issues[:limit]:
-        lines.append(f"• {issue['title']} — {issue['reason']}")
+        lines.append(
+            f"• {escape_markdown(issue['title'])} — {escape_markdown(issue['reason'])}"
+        )
         if issue.get("url"):
-            lines.append(f"  🔗 {issue['url']}")
+            # URL печатается обычным текстом (не ссылкой), поэтому `_` и `*` в нём
+            # надо экранировать — иначе Telegram «съест» их как разметку.
+            lines.append(f"  🔗 {escape_markdown(issue['url'])}")
     if len(issues) > limit:
         lines.append(f"• …и ещё {len(issues) - limit}")
     return "\n".join(lines) + "\n"
@@ -854,13 +859,13 @@ def _format_manual_boards(
         "только через JavaScript. Ссылки подставлены под ваш профиль:_",
     ]
     for board in manual_sources[:limit]:
-        name = board["title"].replace("Сайт: ", "").split(" (")[0]
+        name = escape_markdown(board["title"].replace("Сайт: ", "").split(" (")[0])
         url, has_query = build_manual_board_link(board["url"], role, period_days)
         hint = "" if has_query else " _(введите должность в строке поиска)_"
         lines.append(f"• **{name}** — [открыть поиск]({url}){hint}")
     if len(manual_sources) > limit:
         lines.append(
-            f"• …и ещё {len(manual_sources) - limit} площадок — полный список в /find_resources"
+            f"• …и ещё {len(manual_sources) - limit} площадок — полный список в `/find_resources`"
         )
     return "\n".join(lines) + "\n"
 
@@ -885,8 +890,8 @@ def format_vacancies_search_blocks(search_result: Dict[str, Any]) -> Tuple[str, 
 
     header = (
         f"🔍 **Результаты поиска вакансий за {period_label}**\n"
-        f"👤 **Профиль резюме:** {role or 'не указана (задайте /set_role)'}\n"
-        f"🛠 **Ключевые навыки:** {skills_preview}\n"
+        f"👤 **Профиль резюме:** {escape_markdown(role) if role else 'не указана (задайте `/set_role`)'}\n"
+        f"🛠 **Ключевые навыки:** {escape_markdown(skills_preview)}\n"
         f"📡 **Проверено источников в БД:** {sources_checked}{manual_note}\n"
         f"📊 **Найдено подходящих вакансий:** {total_found}\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
@@ -917,11 +922,11 @@ def format_vacancies_search_blocks(search_result: Dict[str, Any]) -> Tuple[str, 
         icon = "📢" if vac.get("source_type") == "tg_channel" else "🌐"
 
         block = (
-            f"**{idx}. {vac['title']}**\n"
-            f"{icon} **Источник:** {vac['source_title']}\n"
+            f"**{idx}. {escape_markdown(vac['title'])}**\n"
+            f"{icon} **Источник:** {escape_markdown(vac['source_title'])}\n"
             f"🕒 **Дата:** {date_str}\n"
-            f"✅ **Совпадения с резюме:** {matched}\n"
-            f"📝 _{vac.get('snippet', '')}_\n"
+            f"✅ **Совпадения с резюме:** {escape_markdown(matched)}\n"
+            f"📝 _{escape_markdown(vac.get('snippet', ''))}_\n"
             f"🔗 [Перейти к вакансии]({vac['url']})"
         )
         items_blocks.append(block)

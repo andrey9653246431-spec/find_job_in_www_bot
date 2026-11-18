@@ -70,6 +70,30 @@ async def main() -> None:
     dp["db"] = db
 
     register_all_routers(dp)
+
+    @dp.error()
+    async def on_error(event: object) -> bool:
+        """Глобальный перехватчик: одна сломанная отправка не «вешает» обработчик.
+
+        Самая частая причина — `Bad Request: can't find end of the entity`
+        (незакрытая Markdown-сущность в длинном сообщении). Пишем понятную
+        причину в лог и отвечаем пользователю, что делать, вместо тишины.
+        """
+        exception = getattr(event, "exception", None)
+        message = getattr(event, "update", None)
+        logger.exception("Ошибка при обработке обновления: %r", exception)
+        try:
+            target = getattr(message, "message", None) or getattr(message, "callback_query", None)
+            if target is not None and hasattr(target, "answer"):
+                await target.answer(
+                    "⚠️ Не удалось отобразить ответ (ошибка форматирования сообщения).\n"
+                    "Повторите запрос — бот пересоберёт его без разметки.\n"
+                    f"Техническая причина: {type(exception).__name__}"
+                )
+        except Exception:  # noqa: BLE001 — падение уведомления не должно ломать polling
+            logger.debug("Не удалось уведомить пользователя об ошибке")
+        return True
+
     await setup_bot_commands(bot)
 
     logger.info("Бот успешно запущен и ожидает сообщений...")
