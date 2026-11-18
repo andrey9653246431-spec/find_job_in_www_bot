@@ -55,7 +55,24 @@ jobs:
             echo "::error::Секрет BOT_TOKEN не задан. Settings → Secrets and variables → Actions → New repository secret"
             exit 1
           fi
-          python check_bot_ready.py --online
+          if [ -f check_bot_ready.py ]; then
+            python check_bot_ready.py --online
+          else
+            echo "::warning::check_bot_ready.py не найден в репозитории — выполняю резервную проверку токена через getMe."
+            echo "Загрузите find_job_in_www_bot.zip в корень репозитория, чтобы включить полную предполётную проверку."
+            RESPONSE=$(curl -s --max-time 20 "https://api.telegram.org/bot${BOT_TOKEN}/getMe")
+            echo "getMe → ${RESPONSE}"
+            echo "$RESPONSE" | grep -q '"ok":true' || {
+              echo "::error::Telegram отклонил BOT_TOKEN. Проверьте секрет (Settings → Secrets → Actions)."
+              exit 1
+            }
+            WEBHOOK=$(curl -s --max-time 20 "https://api.telegram.org/bot${BOT_TOKEN}/getWebhookInfo")
+            echo "getWebhookInfo → ${WEBHOOK}"
+            if echo "$WEBHOOK" | grep -q '"url":"http'; then
+              echo "::error::У бота установлен webhook — long polling не заработает. Удалите его: https://api.telegram.org/bot<TOKEN>/deleteWebhook?drop_pending_updates=true"
+              exit 1
+            fi
+          fi
 
       - name: Run Telegram Bot with GitHub Secrets
         env:
@@ -86,7 +103,7 @@ jobs:
           exit "$code"
 
       - name: Save SQLite database to cache
-        if: always()
+        if: always() && hashFiles('data/**') != ''
         uses: actions/cache/save@v4
         with:
           path: data
