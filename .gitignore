@@ -35,3 +35,4 @@ data/*.sqlite3
 
 # Сгенерированный архив проекта (не коммитим в репозиторий)
 find_job_in_www_bot.zip
+uploads/

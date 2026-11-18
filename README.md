@@ -104,10 +104,10 @@
 | Запрос пользователя | Что выдаёт бот |
 |---|---|
 | «Telegram-каналы», «ТГ-каналы», «чаты» | ссылки `https://t.me/username` в формате `[Название](https://t.me/username)` + тематика канала (IT, HR, Маркетинг, GameDev, Remote) |
-| «агрегаторы», «сайты с вакансиями», конкретные платформы | job-борды: hh.ru, Хабр Карьера, Работа.ру, Зарплата.ру, Город Работ, SuperJob, **hirify.me**, getmatch, GeekJob, Работа России, LinkedIn |
+| «агрегаторы», «сайты с вакансиями», конкретные платформы | job-борды: hh.ru, Хабр Карьера, Работа.ру, Зарплата.ру, Город Работ, **hirify.me**, getmatch, GeekJob, Работа России, LinkedIn |
 | «компании», «ТОП-100/500/1000», «карьерные страницы» | структурированный список компаний по отраслям: `[Сайт](...) | [Карьера / Вакансии](...) | описание` |
 | «ТГ-каналы и агрегаторы» (смешанный запрос) | оба блока в одном ответе |
-| профессия («вакансии HR-менеджер») | deep-links поиска с фильтрами: hh.ru, Хабр Карьера, SuperJob, hirify.me, getmatch + инструкция поиска каналов в Telegram |
+| профессия («вакансии HR-менеджер») | deep-links поиска с фильтрами: hh.ru, Хабр Карьера, hirify.me, getmatch + инструкция поиска каналов в Telegram |
 
 **Правила вывода, зашитые в код:**
 1. **Структура и блоки** — более 15–20 позиций разбиваются на смысловые блоки (отрасли: IT и Телеком, Банки и финансы, Ритейл и e-commerce, Промышленность, Логистика, FMCG, Фарма).
@@ -117,7 +117,270 @@
 5. **Дисклеймер в каждом ответе** — «Ссылки могут меняться. Актуальность вакансий проверяйте на официальных сайтах компаний, в Telegram-каналах или на агрегаторах (hh.ru, hirify.me).»
 6. **Живая проверка при добавлении источника** — `verify_source_availability()` запрашивает `https://t.me/s/<channel>` и сообщает, отдаёт ли канал публичное превью (защита от приватных и несуществующих каналов).
 
-**Примеры ответов:** [`examples/resources_search_examples.md`](examples/resources_search_examples.md). Каталог: 8 Telegram-каналов, 11 агрегаторов, 30 компаний в 7 отраслях.
+**Примеры ответов:** [`examples/resources_search_examples.md`](examples/resources_search_examples.md). Каталог: 138 Telegram-каналов, 32 сайта-агрегатора, 30 компаний в 7 отраслях — полный реестр источников вакансий ниже, в разделе «📡 Источники вакансий».
+
+---
+
+## 📡 Источники вакансий: полный реестр (163 ресурса)
+
+Реестр сгенерирован из кода (`bot/database.py` + `bot/services/resource_catalog.py`) скриптом `tools/regen_readme_registry.py` — он не может разойтись с базой.
+
+### Сводка
+
+| Что | Сколько | Как используется |
+|---|---|---|
+| Telegram-каналы | **135** | парсинг через веб-превью `t.me/s/<канал>` |
+| Сайты, API и RSS | **28** | API/RSS/HTML-парсинг + ручные ссылки поиска |
+| — из них автопарсинг | **9** | hh.ru API, «Работа России» API, RSS Хабр Карьеры/WWR/Jobspresso, HTML budu.jobs и remote-job.ru |
+| — из них ручной поиск | **19** | бот формирует готовые ссылки под профиль (Cloudflare/403/JS) |
+| **Итого** | **163** | один поиск = 163 параллельных запросов |
+
+Каталог ресурсов `/find_resources`: **138** каналов, **31** сайта-агрегатора, 30 компаний с карьерными страницами.
+
+Живой прогон (профиль «Директор по маркетингу», 7 дней): **163 источников → 410 вакансий**, 19 предупреждений об источниках с закрытым веб-превью (они остаются в базе, бот честно сообщает причину и даёт ссылку).
+
+## 🌐 Сайты, RSS-ленты и API (28)
+
+| Сайт | URL | Как читаем |
+|---|---|---|
+| RemoteOK | https://remoteok.com/ | JSON API |
+| We Work Remotely | https://weworkremotely.com/ | RSS |
+| Jobspresso | https://jobspresso.co/ | RSS |
+| Indeed | https://www.indeed.com/ | 🔗 ручной поиск (403/JS/антибот) |
+| Glassdoor | https://www.glassdoor.com/ | 🔗 ручной поиск (403/JS/антибот) |
+| ZipRecruiter IE | https://www.ziprecruiter.ie/ | 🔗 ручной поиск (403/JS/антибот) |
+| CareerBuilder | https://www.careerbuilder.com/ | 🔗 ручной поиск (403/JS/антибот) |
+| WantApply | https://wantapply.com/ | 🔗 ручной поиск (403/JS/антибот) |
+| Remote.co | https://remote.co/ | 🔗 ручной поиск (403/JS/антибот) |
+| HeadHunter | https://hh.ru | API hh.ru |
+| Хабр Карьера | https://career.habr.com | RSS |
+| GeekJob | https://geekjob.ru | HTML-лента |
+| Работа России | https://trudvsem.ru | открытые данные (JSON API) |
+| Буду | https://budu.jobs/ | HTML-лента |
+| Remote Job | https://remote-job.ru/ | HTML-лента |
+| getmatch | https://getmatch.ru/vacancies | 🔗 ручной поиск (403/JS/антибот) |
+| Facancy | https://facancy.ru/ | 🔗 ручной поиск (403/JS/антибот) |
+| Changellenge | https://changellenge.com/ | 🔗 ручной поиск (403/JS/антибот) |
+| InGame Job | https://ingamejob.com/ | 🔗 ручной поиск (403/JS/антибот) |
+| Careerist | https://careerist.ru/ | 🔗 ручной поиск (403/JS/антибот) |
+| LinkedIn Jobs | https://www.linkedin.com/jobs/ | 🔗 ручной поиск (403/JS/антибот) |
+| Wellfound | https://wellfound.com/jobs | 🔗 ручной поиск (403/JS/антибот) |
+| Jooble | https://ru.jooble.org/ | 🔗 ручной поиск (403/JS/антибот) |
+| ГородРабот | https://gorodrabot.ru | 🔗 ручной поиск (403/JS/антибот) |
+| Avito Работа | https://www.avito.ru/rossiya/vakansii | 🔗 ручной поиск (403/JS/антибот) |
+| YouDo | https://youdo.com/ | 🔗 ручной поиск (403/JS/антибот) |
+| Kwork | https://kwork.ru/ | 🔗 ручной поиск (403/JS/антибот) |
+| FL.ru | https://www.fl.ru/ | 🔗 ручной поиск (403/JS/антибот) |
+
+### 🌍 Почему часть площадок — только ручной поиск
+
+- **Indeed, Glassdoor, ZipRecruiter, CareerBuilder, WantApply, Remote.co** — Cloudflare/403 с облачных IP: бот не обходит защиту и не выдумывает вакансии.
+- **Avito (439), ГородРабот (423), Jooble, YouDo, Kwork, FL.ru, getmatch, Careerist, Facancy, Changellenge, InGame Job, Wellfound, LinkedIn** — либо антибот-ответ, либо выдача рендерится JavaScript-ом, поэтому в HTML нет вакансий.
+- Для всех таких площадок бот показывает **ссылку поиска под ваш профиль** (`build_manual_board_link`) и прямо пишет, что это ручной режим.
+
+## 📢 Telegram-каналы (138)
+
+### Executive, топ-менеджмент и карьера руководителя (11)
+
+- **Я Топ** — [@i_top_groups](https://t.me/i_top_groups) — Вакансии и резюме для топ-менеджеров, руководителей и управленцев.
+- **КАРЬЕРА ЛИДЕРА \| Вакансии для руководителей** — [@work_for_top](https://t.me/work_for_top) — Вакансии для руководителей и топов: CEO, директора направлений.
+- **Exec Select \| Топ вакансии для руководителей** — [@execselect](https://t.me/execselect) — Отборные executive-вакансии для руководителей высшего звена.
+- **Вакансии от CRC** — [@vacancyCRC](https://t.me/vacancyCRC) — Career Review Center: вакансии для middle/top-менеджеров и HR-консалтинг.
+- **Work For TOP Вакансии для руководителей** — [@workfortop](https://t.me/workfortop) — Вакансии для руководителей: топ-позиции и управленческие роли.
+- **TOP LEVEL JOB [топ вакансии для руководителей]** — [@toplevel_job](https://t.me/toplevel_job) — Вакансии уровня CEO/CEO-1 с прямыми контактами работодателей.
+- **Ловец вакансий 🙌🏻** — [@jobcatcher](https://t.me/jobcatcher) — 4.4K: агрегатор управленческих вакансий.
+- **Job for Chiefs** — [@forchiefs](https://t.me/forchiefs) — CPO, CTO, directors, heads, C-level.
+- **TOP Management** — [@vakansii_top_manager](https://t.me/vakansii_top_manager) — CEO, COO, коммерческие директора.
+- **Executive Career** — [@ExecCareer](https://t.me/ExecCareer) — Executive search, карьера топов.
+- **Executive & C Level** — [@executive_jobs](https://t.me/executive_jobs) — Международные executive позиции.
+
+### HR, рекрутинг, кадры и HR-tech (37)
+
+- **HR \| Вакансии 🦊** — [@vacancies_it](https://t.me/vacancies_it) — Вакансии в IT и подборка HR-позиций от кадровых агентств.
+- **Ирена_Иванова_official** — [@irenaivanova_official](https://t.me/irenaivanova_official) — Авторский канал Ирены Ивановой: рынок труда, карьера, инсайды от хантера.
+- **Наталья Ларина \| Карьера по своим правилам** — [@larina_career](https://t.me/larina_career) — Карьера по своим правилам: поиск работы, офферы, карьерные стратегии.
+- **#ПерезагрузкаКарьеры** — [@hrexpert63](https://t.me/hrexpert63) — Эксперт по обе стороны найма: карьера, HR-практика, разборы.
+- **Abrashitova Natalya \| Карьерное развитие** — [@hrhack_career](https://t.me/hrhack_career) — Наталья Абрашитова (HRD 15+ лет): вакансии, HR-советы, карьерные разборы.
+- **Живое обучение** — [@prolearning](https://t.me/prolearning) — Елена Тихомирова о том, как учатся взрослые и как строить корпоративное обучение.
+- **Talent Hunters** — [@talent_hunters](https://t.me/talent_hunters) — Лана Катаева (ex-AVRIO): тренды рынка труда, хантинг, HR-мероприятия.
+- **IT HR тусовка от ХК** — [@ithr_tusovka](https://t.me/ithr_tusovka) — Хабр Карьера: найм в IT, тренды, исследования, мемы для эйчаров.
+- **Рекомендательный рекрутинг** — [@recommend_recruit](https://t.me/recommend_recruit) — Рекрутинг по рекомендациям: заявки, кандидаты, вознаграждение за рекомендацию.
+- **Смелый рекрутинг** — [@ithunterio](https://t.me/ithunterio) — Смелый рекрутинг: нестандартные подходы к найму и сорсингу.
+- **TrendHR** — [@trend_hr](https://t.me/trend_hr) — HR-тренды, инструменты и практики найма.
+- **БОЛЬШЕ чем HR** — [@more_than_hr](https://t.me/more_than_hr) — Галина Друбецкая: HR шире найма — культура, коммуникации, люди.
+- **ВСЕМ МЕМ** — [@vsemmema](https://t.me/vsemmema) — Мемы про работу, найм и офисную жизнь.
+- **Елена Шебашова \| ЗА КАДРОМ** — [@elena_shebashova](https://t.me/elena_shebashova) — Елена Шебашова: за кадром найма — карьера, HR, откровенные разборы.
+- **HR-вакансии \| ЗА КАДРОМ** — [@zakadrom_hr](https://t.me/zakadrom_hr) — HR-вакансии и карьерные возможности в сфере управления персоналом.
+- **hh.ru** — [@hh_ru_official](https://t.me/hh_ru_official) — Официальный канал hh.ru (89.7K): подборки вакансий, карьерные советы, продукты hh.
+- **Обновите резюме!** — [@obn_rezume](https://t.me/obn_rezume) — 11.4K: вакансии и советы по построению карьеры.
+- **HR-Tech.Карьера 🔥** — [@HRTech_Jobs](https://t.me/HRTech_Jobs) — 9.8K: ежедневные вакансии в сфере HR-Tech от компаний.
+- **Вакансии в HR-Аналитике** — [@HR_Analytics_Jobs](https://t.me/HR_Analytics_Jobs) — 7.2K: вакансии для HR-аналитиков и people analytics.
+- **Архитектор Карьеры** — [@architect_career](https://t.me/architect_career) — 1.3K: карьерный коучинг и HR-практика.
+- **Карьера без паники с Дарьей Гречиной** — [@ne_titanik_DG](https://t.me/ne_titanik_DG) — 1.2K: честно о карьере и найме — без воды и «просто верь в себя».
+- **JOBнулся. О работе и карьере. Как есть** — [@jobnulsya](https://t.me/jobnulsya) — 619: авторский канал Василия Паева о работе, карьере, HR и жизни.
+- **МарЧар \| Маркетинг в HR** — [@marhrru](https://t.me/marhrru) — Маркетинг в HR: employer brand, коммуникации, кейсы подбора.
+- **HR мама 🍋** — [@HRmother](https://t.me/HRmother) — HR-практика для мам и не только: подбор, адаптация, карьера в HR.
+- **Кадровый голод** — [@kadrovik_krd](https://t.me/kadrovik_krd) — Кадровое делопроизводство, ТК РФ и практика кадровика.
+- **Аптуми (up to me)** — [@uptume](https://t.me/uptume) — Карьерное развитие, самоопределение и поиск работы.
+- **Русский HR** — [@rus_hr](https://t.me/rus_hr) — Новости и практика российского HR-рынка.
+- **Всё, я увольняюсь!** — [@uvolnyaus](https://t.me/uvolnyaus) — Увольнение, смена работы и карьерные истории без прикрас.
+- **АККСиомы Карьеры** — [@akks_career](https://t.me/akks_career) — Карьерные советы, разборы вакансий и резюме.
+- **Вакансии от Хрипченко Ани** — [@rudakovahr](https://t.me/rudakovahr) — Подборка актуальных HR- и офисных вакансий от рекрутера.
+- **Job for HR** — [@forhr](https://t.me/forhr) — Recruiter, HRBP, HRD.
+- **HR вакансии** — [@job_in_hr](https://t.me/job_in_hr) — Recruitment, HR, кадровые роли.
+- **HR Jobs** — [@hr_jobs_rabota](https://t.me/hr_jobs_rabota) — Recruiter, HRBP, HRD.
+- **эйчарли** — [@hrorhr](https://t.me/hrorhr) — Профильный поток, senior и executive.
+- **HR Хаб вакансии** — [@hrhubvacancy](https://t.me/hrhubvacancy) — Сильный источник HR вакансий.
+- **HR Хаб 300+** — [@hrhubvacancy300](https://t.me/hrhubvacancy300) — Роли с высокой компенсацией (HRD, Head of HR).
+- **HR Хаб Junior** — [@hrhubjunior](https://t.me/hrhubjunior) — Junior HR и начальные роли.
+
+### Product, project и QA (4)
+
+- **Hire ProProduct - Продуктовые вакансии** — [@hireproproduct](https://t.me/hireproproduct) — Вакансии для продакт- и проджект-менеджеров, аналитиков, дизайнеров.
+- **Job for Products and Projects** — [@forproducts](https://t.me/forproducts) — Product, Project, CPO, Product Owner.
+- **Product Jobs** — [@product_jobs](https://t.me/product_jobs) — Product и Project менеджеры.
+- **Job for QA** — [@forallqa](https://t.me/forallqa) — Manual, Automation, QA Lead.
+
+### IT, разработка, данные и GameDev (12)
+
+- **Хабр Карьера** — [@habr_career](https://t.me/habr_career) — Вакансии и обсуждение карьеры в IT от редакции Хабра.
+- **IT Job x IT Vacancies** — [@job_it_ru](https://t.me/job_it_ru) — Подборка IT-вакансий: разработка, аналитика, DevOps, удалёнка.
+- **Remote IT Jobs** — [@remote_it_jobs](https://t.me/remote_it_jobs) — Только удалённые IT-вакансии — удобно для поиска из любого города.
+- **Game Development Jobs** — [@devjobs](https://t.me/devjobs) — Вакансии в игровой индустрии: программисты, художники, геймдизайнеры.
+- **Вакансии в IT** — [@data_jobs_ru](https://t.me/data_jobs_ru) — Свежие IT-вакансии, включая аналитику данных и инженерию.
+- **Senior Помідор** — [@tomato1000](https://t.me/tomato1000) — IT-вакансии с зарплатой от $1000 (UA/remote). ⚠️ веб-превью закрыто — ручной просмотр.
+- **Удаленка — IT и Digital** — [@theyseeku_it](https://t.me/theyseeku_it) — 9.7K: удалённая работа в IT и digital — разработка, аналитика, дизайн.
+- **Analytics Jobs** — [@analytics_jobs](https://t.me/analytics_jobs) — Data Analyst, BI, Product Analyst.
+- **Работа IT аналитикам** — [@jobs_for_it_analyst](https://t.me/jobs_for_it_analyst) — BA, SA, системная аналитика.
+- **Data Science Jobs** — [@datasciencejobs](https://t.me/datasciencejobs) — ML, DS, AI, CV, Data Engineering.
+- **DevOps Jobs** — [@devops_jobs](https://t.me/devops_jobs) — DevOps, SRE.
+- **СЕТИ IT & Digital вакансии** — [@it_vakansii_jobs](https://t.me/it_vakansii_jobs) — Большой поток с прямыми контактами HR.
+
+### Дизайн (7)
+
+- **Точка входа** — [@bbe_jobs](https://t.me/bbe_jobs) — 25.6K: вакансии для дизайнеров и креативной индустрии (школа BBE).
+- **Ищу работу \| Диджитал** — [@work_looking](https://t.me/work_looking) — 5.6K: вакансии для дизайнеров, SMM-специалистов и digital.
+- **Job for Designers** — [@fordesigner](https://t.me/fordesigner) — UX, UI, Graphic, Art Direction.
+- **UI/UX Jobs** — [@uiux_jobs](https://t.me/uiux_jobs) — Узкопрофильный UX/UI.
+- **Вакансии для дизайнеров** — [@designer_vacancies](https://t.me/designer_vacancies) — Graphic, UX/UI, illustration, 3D.
+- **UX/UI Designer Vacancies** — [@uxui_designer_vacancies](https://t.me/uxui_designer_vacancies) — Узкопрофильный UX/UI.
+- **Design Jobs** — [@design_jobs_uxui](https://t.me/design_jobs_uxui) — UX/UI и Graphic.
+
+### Маркетинг, PR, медиа и контент (12)
+
+- **marketing jobs** — [@marketing_jobs](https://t.me/marketing_jobs) — Вакансии для маркетологов: performance, бренд, продуктовая аналитика.
+- **Ждём резюме \| Лайфхакер** — [@zdemcv](https://t.me/zdemcv) — 80.4K: вакансии в диджитале и медиа от Лайфхакера.
+- **Джобстер Digital \| Маркетинг \| Вакансии и резюме** — [@digital_jobster](https://t.me/digital_jobster) — 47.8K: вакансии и резюме в маркетинге, digital, PR, SMM.
+- **CPA HUNTER \| Вакансии арбитража трафика** — [@hr_affiliate](https://t.me/hr_affiliate) — 35.7K: вакансии в IT, CPA, SEO, SMM и affiliate-маркетинге.
+- **Работа GO** — [@rabota_go](https://t.me/rabota_go) — 22.4K: вакансии в маркетинге, медиа, продажах и SMM.
+- **Job for Marketing** — [@forallmarketing](https://t.me/forallmarketing) — Digital, Growth, Performance, CRM, CMO.
+- **DNative Job** — [@dnative_job](https://t.me/dnative_job) — SMM и Digital.
+- **Work Hunter** — [@vakansii_0](https://t.me/vakansii_0) — Marketing, SMM, PR, Content, Design, Sales.
+- **Вакансии Telegram Ads / закупщики** — [@vakansiitelegramm](https://t.me/vakansiitelegramm) — Таргетологи, Telegram Ads, посевы.
+- **Job for Media & Content** — [@forallmedia](https://t.me/forallmedia) — Редакторы, журналисты, копирайтеры.
+- **Мы вам перезвоним** — [@perezvonyu](https://t.me/perezvonyu) — Media и Digital.
+- **Event Hunter** — [@mskeventjob](https://t.me/mskeventjob) — Media, events, creative, production.
+
+### Продажи, клиентский сервис и Customer Success (7)
+
+- **Job for Sales & BizDev** — [@forallsales](https://t.me/forallsales) — Sales, BDM, Account Management, CCO.
+- **Sales Work** — [@sales_work](https://t.me/sales_work) — Общие продажи.
+- **IT Sales Manager Jobs** — [@sales_manager_job](https://t.me/sales_manager_job) — Sales в IT, SaaS, fintech и digital.
+- **Sales Talents** — [@salestalents](https://t.me/salestalents) — Sales, KAM, BDM.
+- **Careerspace** — [@careerspace](https://t.me/careerspace) — Общий канал с подборками по продажам.
+- **Вакансии в клиентском сервисе** — [@bizservisjob](https://t.me/bizservisjob) — Customer Support, CX.
+- **Customer Success Talents** — [@cstalents](https://t.me/cstalents) — CS, account management.
+
+### Финансы, финтех, юристы и комплаенс (7)
+
+- **Fintech - Jobs** — [@fintech_jobs](https://t.me/fintech_jobs) — Вакансии в финтехе, банках, крипте и платёжных сервисах.
+- **CFO / IFRS вакансии** — [@cfo_ifrs](https://t.me/cfo_ifrs) — CFO, Controller, IFRS, Finance.
+- **CFO Search** — [@cfosearch](https://t.me/cfosearch) — Финансовые руководители.
+- **Финансы, бухгалтерия, экономика** — [@working_in_finance](https://t.me/working_in_finance) — Бухгалтеры, экономисты, аналитики, 1С.
+- **Work in Accounting** — [@work_in_accounting](https://t.me/work_in_accounting) — Бухгалтерия и finance operations.
+- **Работа в финтехе** — [@fintech_work](https://t.me/fintech_work) — Fintech, stock market, crypto, startups.
+- **FintechJob Cards & Payments** — [@paymentcardjobs](https://t.me/paymentcardjobs) — Payments, acquiring, cards, operations.
+
+### Ассистенты и администрирование (4)
+
+- **ИЩУ АССИСТЕНТА \| Размещение вакансий** — [@nanyatassistenta](https://t.me/nanyatassistenta) — Вакансии и поиск ассистентов: размещение запросов на подбор ассистента, executive/personal assistant.
+- **GetAssistant вакансии** — [@getassistant_vacancy](https://t.me/getassistant_vacancy) — Business/Executive/Personal Assistant (150-200k+).
+- **Ассистека** — [@assisteca_job](https://t.me/assisteca_job) — Ассистенты разного уровня.
+- **Менеджер / Ассистент / Работа** — [@pomochnik_vakansii](https://t.me/pomochnik_vakansii) — Ассистенты, office management, операционка.
+
+### Отрасли: фарма, медицина, стройка, HoReCa (12)
+
+- **ПРОМЫШЛЕННЫЙ СОЮЗ [вакансии: B2B, FMCG, фарма, агро, стройка]** — [@psoyuz](https://t.me/psoyuz) — Вакансии в производстве, стройке, агро, фарме и FMCG (B2B).
+- **ФАРМА. Вакансии** — [@JobinPharma](https://t.me/JobinPharma) — Фармкомпании, аптечные сети, дистрибьюторы.
+- **Лапа в фарме** — [@lapainpharma](https://t.me/lapainpharma) — Нишевый источник, стажировки.
+- **Pharma & Medical Recruitment** — [@pharmed_recruitment](https://t.me/pharmed_recruitment) — Фарма и medical.
+- **Работа / Медицина / Вакансии** — [@superjob_medicina](https://t.me/superjob_medicina) — Врачи, клиники, медперсонал.
+- **Работа в медицине** — [@job_in_med](https://t.me/job_in_med) — Медицина (общее).
+- **Медицинские вакансии / сообщество** — [@job_in_zdrav](https://t.me/job_in_zdrav) — Врачи и медицинский персонал.
+- **HoReCa HR** — [@HoReCa_HR](https://t.me/HoReCa_HR) — Рестораны, кафе, гостиницы.
+- **Общепит работа есть** — [@rujobinfood](https://t.me/rujobinfood) — Общепит.
+- **Express Waiter** — [@expresswaiter](https://t.me/expresswaiter) — Рестораны, официанты, кухня.
+- **Express Waiter Vacancies** — [@expresswaiter_vacancy](https://t.me/expresswaiter_vacancy) — Отдельный поток вакансий.
+- **Повара / HoReCa** — [@exwaiters](https://t.me/exwaiters) — Кухня (повара).
+
+### Удалёнка, фриланс и релокация (8)
+
+- **Remote Jobs \| Remote Work** — [@remote_work_jobs](https://t.me/remote_work_jobs) — Удалённые вакансии разных профессий, в том числе англоязычные.
+- **Вакансии с релокацией** — [@relocation_vacancies](https://t.me/relocation_vacancies) — Релокация: зарубежные и релокационные вакансии с визовой поддержкой.
+- **Удаленка. Вакансии и резюме** — [@rabota_freelancee](https://t.me/rabota_freelancee) — 33.3K: удалённые вакансии и резюме — маркетинг, SMM, digital.
+- **Brocli: зарубежный фриланс \| лайфхаки** — [@digitalbroccoli](https://t.me/digitalbroccoli) — 23.8K: выход на зарубежный фриланс, оплаты, кейсы и лайфхаки.
+- **Удаленка** — [@remote_w0rk](https://t.me/remote_w0rk) — 15.5K: канал для поиска работы и работников на удалёнке.
+- **Уютный Фриланс 😸** — [@Uyut_frilans](https://t.me/Uyut_frilans) — 14.1K: фриланс-вакансии, проверенные заказчики. ⚠️ канал закрыл веб-превью — только ручной просмотр.
+- **Фрилансер: вакансии на удаленке** — [@workfreelancer](https://t.me/workfreelancer) — 12.5K: площадка удалённой работы, размещение вакансий и резюме.
+- **Easy Work \| Фриланс заказы \| Удаленная работа** — [@Easy_wrk](https://t.me/Easy_wrk) — 4.9K: удалённая работа и фриланс-заказы.
+
+### Общие подборки вакансий, аналитика рынка и прочее (17)
+
+- **Finder.work: работа и вакансии** — [@theyseeku](https://t.me/theyseeku) — 274K подписчиков: удалённые вакансии со всей России, размещение бесплатно (finder.work).
+- **Янг Групп** — [@you_social](https://t.me/you_social) — Вакансии и карьерные возможности для молодых специалистов.
+- **Лучшие вакансии** — [@vacanciesbest](https://t.me/vacanciesbest) — Отобранные вакансии по разным функциям и уровням.
+- **Топовые вакансии \| Петр Липов** — [@jobinspb](https://t.me/jobinspb) — Вакансии Санкт-Петербурга и управление карьерой.
+- **Неустойчивое развитие** — [@nongreta](https://t.me/nongreta) — Экология, ESG и устойчивое развитие — вакансии и повестка.
+- **Юридические вакансии** — [@legal_jobs](https://t.me/legal_jobs) — In house, consulting, litigation, corporate, M&A.
+- **HelloLawyer Jobs** — [@hellolawyer_jobs](https://t.me/hellolawyer_jobs) — Legal Counsel, Compliance, IP, Regulatory.
+- **Вакансии строительство** — [@vacancii_construction](https://t.me/vacancii_construction) — РП, ПТО, архитекторы, инженеры, сметчики.
+- **Мосинжпроект** — [@mosinzproekt](https://t.me/mosinzproekt) — Карьерный канал работодателя (ГИП, сметчики, IT).
+- **JavaScript Jobs** — [@javascript_jobs](https://t.me/javascript_jobs) — Frontend, JS, TypeScript.
+- **Python Jobs** — [@ru_pythonjobs](https://t.me/ru_pythonjobs) — Python.
+- **Java Jobs** — [@java_jobs](https://t.me/java_jobs) — Java/Kotlin.
+- **JavaDevJob** — [@javadevjob](https://t.me/javadevjob) — Ещё один поток Java.
+- **Golang Jobs** — [@golangjob](https://t.me/golangjob) — Go (Golang).
+- **Mobile Dev Jobs** — [@mobile_jobs](https://t.me/mobile_jobs) — iOS, Android.
+- **MobileDevJob** — [@mobiledevjob](https://t.me/mobiledevjob) — Mobile (общее).
+- **PR вакансии и стажировки** — [@prvacant](https://t.me/prvacant) — От стажёра до руководителя.
+
+
+## ⚙️ Как это работает
+
+| Механизм | Где | Что делает |
+|---|---|---|
+| `Database.ensure_default_sources()` | `main.py` при старте | досеивает новые источники **в уже существующую БД** без дублей (`canonical_url`), в логе: `Добавлено новых источников вакансий в БД: N` |
+| `source_issues` | `vacancy_parser.py` | собирает нечитаемые источники (закрытое превью, 403, таймаут) и показывает их блоком — «пустая выдача» не выглядит как «вакансий нет» |
+| `_pick_title_and_snippet()` | там же | заголовком вакансии становится первая строка с буквами/цифрами — эмодзи-строки (`🔥`, `🆕`) пропускаются |
+| `parse_remoteok_api()` | там же | парсит JSON API RemoteOK (позиция, компания, теги, зарплата, дата по `epoch`) |
+| `format_vacancies_search_blocks()` | там же | отдаёт сообщение двумя блоками (`body` + `footer`), чтобы предупреждения и дисклеймер не обрезались |
+| Проверка дублей | тесты | `test_sources_total_and_uniqueness`, `test_tgstat_channels_no_duplicates` — уникальность `canonical_url` и `username` |
+
+### Добавить свой источник
+
+```
+/add_source https://t.me/your_channel     # канал: проверка доступности превью
+/add_source https://example.com/vacancies # сайт: проверка HTTP-ответа
+```
+Ответ — «✅ добавлен» либо «⚠️ этот источник уже есть в базе данных» (с названием, типом и проверкой ссылки). Список: `/sources`, удаление: `/remove_source <ссылка>`.
+
+### Ограничения (честно)
+
+- Один поиск = 163 параллельных HTTP-запросов → обычно 10–25 секунд.
+- Часть площадок (Indeed, Glassdoor, ZipRecruiter, CareerBuilder, WantApply, Remote.co) закрыта антибот-защитой — без платных API их не обойти.
+- Ряд каналов отключил публичное веб-превью (`@Uyut_frilans`, `@tomato1000`, `@devops_jobs`, `@java_jobs`, `@uiux_jobs`, `@job_in_hr`, `@HoReCa_HR` и др.) — бот показывает их в блоке «⚠️ Часть источников не удалось прочитать» со ссылкой, вакансии по ним смотрите вручную.
+- `@fuck_the_frameworks` и `SuperJob` выведены из поиска (закрытое превью / нет совпадений с профилем): записи в базе погашены `is_active = 0`, предупреждения больше не показываются.
+- Актуальность ссылок и состав каналов меняются. Дисклеймер: «Ссылки могут меняться. Актуальность вакансий проверяйте на официальных сайтах компаний, в Telegram-каналах или на агрегаторах (hh.ru, hirify.me).»
 
 ---
 
@@ -158,34 +421,47 @@
 ## 📂 Структура репозитория
 
 ```text
-├── README.md                  # Документация проекта
-├── requirements.txt           # Зависимости Python
-├── .env.example               # Шаблон переменных окружения
-├── .gitignore                 # Исключения Git
-├── Dockerfile                 # Сборка Docker-образа
-├── docker-compose.yml         # Запуск в контейнере
-├── .github/
-│   └── workflows/
-│       └── unpack_zip.yml     # Распаковка архива, автотесты и авто-коммит в ветку
-├── main.py                    # Точка входа Telegram-бота
+├── README.md                        # Документация проекта (реестр источников — ниже)
+├── requirements.txt                 # Зависимости Python
+├── .env.example                     # Шаблон переменных окружения
+├── .gitignore                       # Исключения Git
+├── Dockerfile / docker-compose.yml  # Запуск в контейнере
+├── check_bot_ready.py               # Предполётная проверка (18 модулей, getMe, роутеры)
+├── unpack_and_setup.py              # Self-extracting установщик (со встроенным архивом)
+├── unpack_windows.bat               # Распаковщик для Windows
+├── unpack_linux_mac.sh              # Распаковщик для Linux/macOS
+├── .github/workflows/
+│   ├── run_bot.yml                  # Запуск бота на бесплатном GitHub Runner (+preflight)
+│   └── unpack_zip.yml               # Распаковка zip, pytest и авто-коммит в ветку
+├── main.py                          # Точка входа: БД, досев источников, авто-починка профилей
 ├── bot/
-│   ├── config.py              # Загрузка настроек из .env
-│   ├── database.py            # Асинхронная работа с SQLite (резюме, стандарты, источники)
-│   ├── keyboards.py           # Кнопки меню и выбора периода (1 день / 1 неделя / 1 месяц)
-│   ├── states.py              # FSM-состояния диалогов
+│   ├── config.py                    # Настройки из .env (BOT_TOKEN, LLM_*, таймауты)
+│   ├── database.py                  # SQLite: резюме, стандарты, источники (DEFAULT_SOURCES — 53)
+│   ├── keyboards.py                 # Кнопки меню и периодов (1 день / 1 неделя / 1 месяц)
+│   ├── states.py                    # FSM-состояния диалогов
 │   ├── handlers/
-│   │   ├── common.py          # /start, /help, /cancel
-│   │   ├── resume.py          # Отдельная функция загрузки резюме + вызов адаптации
-│   │   ├── standards.py       # Отдельная функция задания стандартов рынка внутри бота
-│   │   ├── sources.py         # Добавление сайтов и ТГ-каналов с проверкой дубликатов
-│   │   └── search.py          # Поиск вакансий по резюме за 1 день, 1 неделю, 1 месяц
+│   │   ├── common.py                # /start, /help, /cancel
+│   │   ├── resume.py                # Загрузка резюме, /set_role, /set_skills, /reset_profile
+│   │   ├── standards.py             # Стандарты рынка внутри бота (Framework 2026+)
+│   │   ├── resources.py             # /find_resources, /channels, /aggregators, /companies
+│   │   ├── sources.py               # Добавление источников с проверкой дублей и доступности
+│   │   └── search.py                # Поиск вакансий за 1 день / 1 неделю / 1 месяц
 │   └── services/
-│       ├── file_extractor.py  # Чтение PDF/DOCX/TXT и извлечение навыков из резюме
-│       ├── market_standards.py# Управление стандартами рынка и адаптация резюме (+ генерация DOCX)
-│       ├── source_manager.py  # Нормализация ссылок и проверка дубликатов источников в БД
-│       └── vacancy_parser.py  # Асинхронный парсер ТГ-каналов (t.me/s/...) и сайтов вакансий
+│       ├── file_extractor.py        # PDF/DOCX/TXT → текст, профиль (роль, навыки), self-repair
+│       ├── market_standards.py      # Золотой стандарт, аудит, адаптация, DOCX, опциональный LLM
+│       ├── resource_catalog.py      # Каталог: 43 канала, 20 агрегаторов, 30 компаний
+│       ├── search_assistant.py      # Алгоритм поиска ресурсов + формат выдачи + дисклеймер
+│       ├── source_manager.py        # Нормализация ссылок, проверка доступности и дублей
+│       └── vacancy_parser.py        # Парсер TG/RSS/JSON API/HTML + source_issues
+├── docs (в корне):
+│   ├── SOURCES_FROM_TGSTAT.md       # Разбор 23 каналов из подборки TGStat (22 добавлено)
+│   ├── ADDED_TELEGRAM_CHANNELS.md   # первая партия: 12 HR/карьерных каналов
+│   ├── INTERNATIONAL_JOB_BOARDS.md  # 9 зарубежных бордов: проверка и стратегии
+│   ├── UPDATE_2026-11-18.md         # Манифест обновления
+│   └── LAUNCH_GITHUB_ACTIONS.md     # Гайд запуска и таблица типовых ошибок
+├── examples/                        # Примеры: ideal_executive_cv_2026_example.md/.docx
 └── tests/
-    └── test_bot_services.py   # Модульные и интеграционные тесты (pytest)
+    └── test_bot_services.py         # 20 тестов pytest
 ```
 
 ---

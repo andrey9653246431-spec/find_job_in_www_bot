@@ -11,14 +11,16 @@
 """
 import asyncio
 from datetime import datetime, timedelta, timezone
+import json
 from email.utils import parsedate_to_datetime
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urljoin
 import aiohttp
 from bs4 import BeautifulSoup
 from bot.config import config
 from bot.database import Database
+from bot.services.resource_catalog import LINKS_DISCLAIMER
 
 PERIOD_LABELS: Dict[int, str] = {
     1: "1 день",
@@ -101,6 +103,38 @@ def calculate_resume_match(
     }
 
 
+_EMOJI_ONLY_RE = re.compile(
+    r"^[\s\W]*$"  # строка без букв и цифр (только эмодзи/символы)
+)
+
+
+def _pick_title_and_snippet(raw_text: str) -> tuple[str, str]:
+    """Выбирает осмысленный заголовок и сниппет поста.
+
+    В Telegram-каналах первая строка часто содержит только эмодзи («🔥», «🆕», «💰»),
+    поэтому берём первую строку, в которой есть буквы/цифры.
+    """
+    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    title = ""
+    body_start = 0
+    for idx, line in enumerate(lines):
+        if _EMOJI_ONLY_RE.match(line) or len(line) < 4:
+            continue
+        title = line[:95]
+        body_start = idx + 1
+        break
+
+    if not title:
+        title = "Вакансия из Telegram-канала"
+        body_start = 0
+
+    snippet_lines = lines[body_start : body_start + 3]
+    if not snippet_lines:
+        snippet_lines = lines[:3]
+    snippet = " ".join(snippet_lines)[:220]
+    return title, snippet
+
+
 def parse_telegram_channel_html(
     html: str,
     source: Dict[str, Any],
@@ -144,9 +178,7 @@ def parse_telegram_channel_html(
         if match_info["score"] <= 0:
             continue
 
-        lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
-        title_line = lines[0][:95] if lines else "Вакансия из Telegram-канала"
-        snippet = " ".join(lines[1:4])[:220] if len(lines) > 1 else raw_text[:220]
+        title_line, snippet = _pick_title_and_snippet(raw_text)
 
         results.append(
             {
@@ -302,9 +334,11 @@ async def _fetch_hh_api_vacancies(
     cutoff_dt: datetime,
 ) -> List[Dict[str, Any]]:
     """Запрашивает вакансии через бесплатный открытый API HeadHunter (api.hh.ru/vacancies)."""
+    # Ищем по должности: государственные и корпоративные API плохо переносят
+    # длинные запросы «должность + все навыки» и возвращают 0 вакансий.
     query_parts = [role] if role and role != "Специалист" else []
-    if skills:
-        query_parts.extend(skills[:3])
+    if not query_parts:
+        query_parts = skills[:2]
     search_query = " ".join(query_parts).strip() or "Python"
 
     params = {
@@ -368,7 +402,189 @@ async def _fetch_hh_api_vacancies(
     return results
 
 
-async def _parse_single_source(
+# =============================================================================
+# Международные job-борды: RemoteOK (JSON API) и «ручные» площадки
+# =============================================================================
+
+# Базовые адреса площадок, которые закрыты для автопарсинга (Cloudflare/403).
+# Шаблон подставляет должность из резюме; для Glassdoor шаблона нет — только база.
+MANUAL_BOARD_LINK_TEMPLATES: Dict[str, str] = {
+    "https://www.indeed.com/": "https://www.indeed.com/jobs?q={q}&fromage={days}",
+    "https://www.ziprecruiter.ie/": "https://www.ziprecruiter.ie/jobs?search={q}",
+    "https://www.careerbuilder.com/": "https://www.careerbuilder.com/jobs?keywords={q}",
+    "https://wantapply.com/": "https://wantapply.com/?s={q}",
+}
+
+
+def build_manual_board_link(board_url: str, role: str, period_days: int) -> Tuple[str, bool]:
+    """Строит ссылку поиска на «ручной» площадке под профиль пользователя.
+
+    Возвращает (url, has_query): has_query=False, если шаблона нет и открывается
+    просто главная страница площадки (честно, без угадывания параметров).
+    """
+    from urllib.parse import quote_plus
+
+    template = MANUAL_BOARD_LINK_TEMPLATES.get(board_url)
+    if not template or not role:
+        return board_url, False
+    return template.format(q=quote_plus(role), days=period_days), True
+
+
+def parse_remoteok_api(
+    json_text: str,
+    source: Dict[str, Any],
+    role: str,
+    skills: List[str],
+    cutoff_dt: datetime,
+) -> List[Dict[str, Any]]:
+    """Парсит открытый JSON API RemoteOK (https://remoteok.com/api)."""
+    try:
+        data = json.loads(json_text)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list):
+        return []
+
+    results: List[Dict[str, Any]] = []
+    for item in data:
+        if not isinstance(item, dict) or not item.get("position"):
+            continue  # первый элемент списка — юридическое уведомление API
+
+        epoch = item.get("epoch") or 0
+        try:
+            published_at = datetime.fromtimestamp(float(epoch), tz=timezone.utc)
+        except (TypeError, ValueError, OSError):
+            published_at = datetime.now(timezone.utc)
+        if published_at < cutoff_dt:
+            continue
+
+        tags = [str(t) for t in (item.get("tags") or [])]
+        body = " ".join(
+            [
+                str(item.get("position", "")),
+                str(item.get("company", "")),
+                " ".join(tags),
+                BeautifulSoup(str(item.get("description", "")), "html.parser").get_text(" ", strip=True),
+            ]
+        )
+
+        match_info = calculate_resume_match(body, role, skills)
+        if match_info["score"] <= 0:
+            continue
+
+        title = f"{item.get('position')} — {item.get('company', '')}".strip(" —")
+        location = item.get("location") or "Remote"
+        snippet_parts = [f"📍 {location}"]
+        if item.get("salary_min"):
+            snippet_parts.append(f"💰 от ${item.get('salary_min')}")
+        if tags:
+            snippet_parts.append("🏷 " + ", ".join(tags[:6]))
+
+        results.append(
+            {
+                "title": title[:95],
+                "url": item.get("url") or source.get("canonical_url", ""),
+                "source_title": source.get("title", source["canonical_url"]),
+                "source_type": "website",
+                "published_at": published_at,
+                "matched_skills": match_info["matched_skills"],
+                "relevance_score": match_info["score"],
+                "snippet": " · ".join(snippet_parts)[:220],
+            }
+        )
+
+    return results
+
+
+# =============================================================================
+# Открытые данные портала «Работа России» (trudvsem.ru, opendata API)
+# =============================================================================
+
+TRUDVSEM_API_URL = "https://opendata.trudvsem.ru/api/v1/vacancies"
+
+
+def parse_trudvsem_api(
+    json_text: str,
+    source: Dict[str, Any],
+    role: str,
+    skills: List[str],
+    cutoff_dt: datetime,
+) -> List[Dict[str, Any]]:
+    """Парсит открытый JSON API портала «Работа России» (opendata.trudvsem.ru).
+
+    Источник данных — государственный портал trudvsem.ru (открытые данные,
+    https://opendata.trudvsem.ru). Обязательна ссылка на первоисточник — она
+    берётся из поля `vac_url`, которое отдаёт сам API.
+    """
+    try:
+        data = json.loads(json_text)
+    except json.JSONDecodeError:
+        return []
+    items = ((data.get("results") or {}).get("vacancies") or [])
+    if not isinstance(items, list):
+        return []
+
+    results: List[Dict[str, Any]] = []
+    for item in items:
+        vacancy = (item or {}).get("vacancy") or {}
+        name = str(vacancy.get("job-name") or "").strip()
+        if not name:
+            continue
+
+        published_at = (
+            parse_iso_or_rfc_date(str(vacancy.get("date_modify") or ""))
+            or parse_iso_or_rfc_date(str(vacancy.get("creation-date") or ""))
+            or datetime.now(timezone.utc)
+        )
+        if published_at < cutoff_dt:
+            continue
+
+        company = str(((vacancy.get("company") or {}).get("name")) or "Работодатель").strip()
+        region = str(((vacancy.get("region") or {}).get("name")) or "").strip()
+        duty = str(vacancy.get("duty") or "")
+        requirements = str(vacancy.get("requirements") or "")
+
+        salary_min = str(vacancy.get("salary_min") or "").strip()
+        salary_max = str(vacancy.get("salary_max") or "").strip()
+        salary = ""
+        if salary_min and salary_max:
+            salary = f" ({salary_min}–{salary_max} ₽)"
+        elif salary_min:
+            salary = f" (от {salary_min} ₽)"
+        elif salary_max:
+            salary = f" (до {salary_max} ₽)"
+
+        match_info = calculate_resume_match(f"{name} {duty} {requirements}", role, skills)
+        # API уже отфильтровал выдачу по поисковому запросу — даём базовый балл
+        score = max(15, match_info["score"])
+        matched = match_info["matched_skills"] or skills[:2]
+
+        snippet_parts = []
+        if region:
+            snippet_parts.append(f"📍 {region}")
+        if vacancy.get("employment"):
+            snippet_parts.append(str(vacancy["employment"]))
+        text = (duty or requirements or "").replace("\n", " ").strip()
+        if text:
+            snippet_parts.append(text[:120])
+
+        results.append(
+            {
+                "title": f"{name} — {company}{salary}"[:120],
+                "url": str(vacancy.get("vac_url") or source.get("canonical_url", "")),
+                "source_title": source.get("title", "Сайт: Работа России (trudvsem.ru API)"),
+                "source_type": "website",
+                "published_at": published_at,
+                "matched_skills": matched,
+                "relevance_score": score,
+                "snippet": " · ".join(snippet_parts)[:220] or f"Вакансия в компании {company}",
+            }
+        )
+
+    return results
+
+
+async def _fetch_trudvsem_api_vacancies(
     session: aiohttp.ClientSession,
     source: Dict[str, Any],
     role: str,
@@ -376,9 +592,66 @@ async def _parse_single_source(
     period_days: int,
     cutoff_dt: datetime,
 ) -> List[Dict[str, Any]]:
-    """Парсит один источник из базы данных (ТГ-канал или веб-сайт)."""
+    """Запрашивает открытые данные «Работа России» по должности из резюме."""
+    # Тот же принцип: у «Работы России» поиск строго по словам, поэтому
+    # запрос строится по должности, а навыки используются только для ранжирования.
+    query_parts = [role] if role and role != "Специалист" else []
+    if not query_parts:
+        query_parts = skills[:2]
+    search_query = " ".join(query_parts).strip() or "менеджер"
+
+    params = {"text": search_query, "offset": "0", "limit": "20"}
+    try:
+        async with session.get(
+            TRUDVSEM_API_URL, params=params, headers=DEFAULT_HEADERS
+        ) as resp:
+            if resp.status != 200:
+                return []
+            body = await resp.text(errors="ignore")
+    except Exception:  # noqa: BLE001 — сбой источника не ломает общий поиск
+        return []
+
+    return parse_trudvsem_api(
+        json_text=body,
+        source=source,
+        role=role,
+        skills=skills,
+        cutoff_dt=cutoff_dt,
+    )
+
+
+async def _parse_single_source(
+    session: aiohttp.ClientSession,
+    source: Dict[str, Any],
+    role: str,
+    skills: List[str],
+    period_days: int,
+    cutoff_dt: datetime,
+    issues: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """Парсит один источник из базы данных (ТГ-канал или веб-сайт).
+
+    Если источник не удалось прочитать (закрыто веб-превью, HTTP-ошибка, сеть),
+    в список `issues` добавляется запись с причиной — она показывается пользователю,
+    чтобы «пустая выдача» не выглядела как «вакансий нет».
+    """
     parse_url = source.get("parse_url", "")
     source_type = source.get("source_type", "website")
+
+    # «Ручные» площадки (Indeed, Glassdoor, ZipRecruiter…) закрыты Cloudflare —
+    # их не парсим, но показываем пользователю готовые ссылки поиска.
+    if source_type == "manual":
+        return []
+
+    def _report(reason: str) -> None:
+        if issues is not None:
+            issues.append(
+                {
+                    "title": source.get("title", parse_url),
+                    "url": source.get("canonical_url", parse_url),
+                    "reason": reason,
+                }
+            )
 
     try:
         # 1. Если это API HeadHunter
@@ -392,13 +665,43 @@ async def _parse_single_source(
                 cutoff_dt=cutoff_dt,
             )
 
-        # 2. Загружаем страницу ТГ-канала (t.me/s/...) или сайта
+        # 2. Открытые данные «Работа России» (trudvsem.ru) — JSON API с параметрами
+        if "opendata.trudvsem.ru/api/v1/vacancies" in parse_url:
+            return await _fetch_trudvsem_api_vacancies(
+                session=session,
+                source=source,
+                role=role,
+                skills=skills,
+                period_days=period_days,
+                cutoff_dt=cutoff_dt,
+            )
+
+        # 3. Загружаем страницу ТГ-канала (t.me/s/...) или сайта
         async with session.get(parse_url, headers=DEFAULT_HEADERS) as resp:
             if resp.status != 200:
+                _report(f"HTTP {resp.status}")
                 return []
             body = await resp.text(errors="ignore")
 
+        # JSON API (RemoteOK): отдаётся список объектов, а не HTML
+        if source_type == "json_api" or body.lstrip()[:1] == "[":
+            return parse_remoteok_api(
+                json_text=body,
+                source=source,
+                role=role,
+                skills=skills,
+                cutoff_dt=cutoff_dt,
+            )
+
         if source_type == "tg_channel" or "t.me/s/" in parse_url:
+            # Канал может быть закрыт для публичного веб-превью (владелец отключил ленту):
+            # тогда t.me/s/ отдаёт страницу-визитку без сообщений.
+            if "tgme_widget_message" not in body:
+                _report(
+                    "канал не отдаёт публичное веб-превью — автопоиск невозможен, "
+                    "проверьте вручную по ссылке"
+                )
+                return []
             return parse_telegram_channel_html(
                 html=body,
                 source=source,
@@ -424,7 +727,8 @@ async def _parse_single_source(
             skills=skills,
             cutoff_dt=cutoff_dt,
         )
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 — сбой одного источника не ломает поиск
+        _report(f"ошибка загрузки ({exc.__class__.__name__})")
         return []
 
 
@@ -463,6 +767,16 @@ async def search_vacancies_by_resume(
     now_utc = datetime.now(timezone.utc)
     cutoff_dt = now_utc - timedelta(days=period_days)
 
+    manual_sources: List[Dict[str, Any]] = [
+        {
+            "title": src.get("title", src.get("canonical_url", "")),
+            "url": src.get("canonical_url", ""),
+        }
+        for src in sources
+        if src.get("source_type") == "manual"
+    ]
+
+    source_issues: List[Dict[str, Any]] = []
     timeout = aiohttp.ClientTimeout(total=config.http_timeout)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         tasks = [
@@ -473,6 +787,7 @@ async def search_vacancies_by_resume(
                 skills=skills,
                 period_days=period_days,
                 cutoff_dt=cutoff_dt,
+                issues=source_issues,
             )
             for src in sources
         ]
@@ -503,36 +818,96 @@ async def search_vacancies_by_resume(
         "sources_checked": len(sources),
         "total_found": len(all_vacancies),
         "vacancies": all_vacancies[: config.max_vacancies_per_message],
+        "source_issues": source_issues,
+        "manual_sources": manual_sources,
     }
 
 
-def format_vacancies_search_message(search_result: Dict[str, Any]) -> str:
-    """Форматирует сообщение со списком найденных вакансий по результатам поиска."""
+def _format_source_issues(issues: List[Dict[str, Any]], limit: int = 5) -> str:
+    """Формирует блок предупреждений о источниках, которые не удалось прочитать."""
+    if not issues:
+        return ""
+    lines = ["", "━━━━━━━━━━━━━━━━━━━━", "⚠️ **Часть источников не удалось прочитать:**"]
+    for issue in issues[:limit]:
+        lines.append(f"• {issue['title']} — {issue['reason']}")
+        if issue.get("url"):
+            lines.append(f"  🔗 {issue['url']}")
+    if len(issues) > limit:
+        lines.append(f"• …и ещё {len(issues) - limit}")
+    return "\n".join(lines) + "\n"
+
+
+def _format_manual_boards(
+    manual_sources: List[Dict[str, Any]],
+    role: str,
+    period_days: int,
+    limit: int = 12,
+) -> str:
+    """Блок ссылок на площадки, которые нельзя парсить (Indeed, Glassdoor, Avito…)."""
+    if not manual_sources:
+        return ""
+    lines = [
+        "",
+        "━━━━━━━━━━━━━━━━━━━━",
+        "🌍 **Международные job-борды и площадки для ручного поиска:**",
+        "_Эти площадки закрыты для автопарсинга (Cloudflare/403) или отдают вакансии "
+        "только через JavaScript. Ссылки подставлены под ваш профиль:_",
+    ]
+    for board in manual_sources[:limit]:
+        name = board["title"].replace("Сайт: ", "").split(" (")[0]
+        url, has_query = build_manual_board_link(board["url"], role, period_days)
+        hint = "" if has_query else " _(введите должность в строке поиска)_"
+        lines.append(f"• **{name}** — [открыть поиск]({url}){hint}")
+    if len(manual_sources) > limit:
+        lines.append(
+            f"• …и ещё {len(manual_sources) - limit} площадок — полный список в /find_resources"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def format_vacancies_search_blocks(search_result: Dict[str, Any]) -> Tuple[str, str]:
+    """Формирует сообщение поиска вакансий как два блока: (основная часть, подвал).
+
+    Подвал (предупреждения об источниках, международные борды и обязательный
+    дисклеймер) выносится отдельно, чтобы при разбиении длинного списка на части
+    дисклеймер гарантированно доходил до пользователя.
+    """
     period_label = search_result["period_label"]
     role = search_result["role"]
     skills = search_result["skills"]
     sources_checked = search_result["sources_checked"]
     vacancies = search_result["vacancies"]
     total_found = search_result["total_found"]
+    manual_sources = search_result.get("manual_sources") or []
 
     skills_preview = ", ".join(skills[:8]) if skills else "по профилю резюме"
+    manual_note = f" (в т.ч. ручной поиск: {len(manual_sources)})" if manual_sources else ""
 
     header = (
         f"🔍 **Результаты поиска вакансий за {period_label}**\n"
         f"👤 **Профиль резюме:** {role or 'не указана (задайте /set_role)'}\n"
         f"🛠 **Ключевые навыки:** {skills_preview}\n"
-        f"📡 **Проверено источников в БД:** {sources_checked}\n"
+        f"📡 **Проверено источников в БД:** {sources_checked}{manual_note}\n"
         f"📊 **Найдено подходящих вакансий:** {total_found}\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
     )
 
+    issues_block = _format_source_issues(search_result.get("source_issues") or [])
+    boards_block = _format_manual_boards(
+        manual_sources,
+        role=role,
+        period_days=search_result.get("period_days", 7),
+    )
+    footer = issues_block + boards_block + f"\n_{LINKS_DISCLAIMER}_"
+
     if not vacancies:
-        return (
+        body = (
             header
             + "\nℹ️ За выбранный период подходящих вакансий по вашим ключевым словам не обнаружено.\n"
             "💡 Попробуйте выбрать больший период (например, **1 неделю** или **1 месяц**) "
             "или добавьте новые профильные Telegram-каналы и сайты в раздел «🌐 Источники вакансий»."
         )
+        return body, footer
 
     items_blocks: List[str] = []
     for idx, vac in enumerate(vacancies, start=1):
@@ -551,4 +926,10 @@ def format_vacancies_search_message(search_result: Dict[str, Any]) -> str:
         )
         items_blocks.append(block)
 
-    return header + "\n\n".join(items_blocks)
+    return header + "\n\n".join(items_blocks), footer
+
+
+def format_vacancies_search_message(search_result: Dict[str, Any]) -> str:
+    """Единое сообщение со списком вакансий (основная часть + подвал с дисклеймером)."""
+    body, footer = format_vacancies_search_blocks(search_result)
+    return f"{body}\n{footer}"

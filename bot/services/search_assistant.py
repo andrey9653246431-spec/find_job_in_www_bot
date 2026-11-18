@@ -225,11 +225,9 @@ def format_profession_block(query: str) -> str:
         "*самая большая база, фильтры по зарплате, опыту и компании.*",
         f"2. **Хабр Карьера** — [Открыть поиск](https://career.habr.com/vacancies?q={quoted}) | "
         "*IT и диджитал, прозрачные вилки.*",
-        f"3. **SuperJob** — [Открыть поиск](https://www.superjob.ru/vacancy/search/?keywords={quoted}) | "
-        "*подписка на новые вакансии по запросу.*",
-        f"4. **hirify.me** — [hirify.me](https://hirify.me) | "
+        f"3. **hirify.me** — [hirify.me](https://hirify.me) | "
         f"*нишевый агрегатор: введите «{profession}» в строку поиска на сайте.*",
-        f"5. **getmatch** — [getmatch.ru/vacancies](https://getmatch.ru/vacancies) | "
+        f"4. **getmatch** — [getmatch.ru/vacancies](https://getmatch.ru/vacancies) | "
         "*IT-вакансии с вилками и персональным мэтчингом.*",
         "",
         f"💡 В Telegram ищите каналы по словам «{profession} вакансии» и «{profession} удалённо» "

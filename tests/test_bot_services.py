@@ -488,7 +488,6 @@ def test_search_assistant_intent_and_formats() -> None:
     allowed_prefixes = (
         "https://hh.ru/search/vacancy?text=",
         "https://career.habr.com/vacancies?q=",
-        "https://www.superjob.ru/vacancy/search/?keywords=",
     )
     for answer in (tg_answer, agg_answer, companies_answer, prof_answer):
         for url in _re.findall(r"https?://[^\s\)\|\]\[]+", answer["text"]):
@@ -611,3 +610,501 @@ async def test_repair_legacy_broken_profile(db: Database) -> None:
     record = await db.get_resume(user_id)
     assert record["extracted_role"].lower() == "руководитель отдела продаж"
     assert all("кузнецов" not in s.lower() for s in record["extracted_skills"])
+
+
+@pytest.mark.asyncio
+async def test_user_added_hr_channels_in_database(db: Database) -> None:
+    """Тест 10: добавленные пользователем HR/карьерные ТГ-каналы присутствуют в БД
+    (и досеиваются в уже существующую базу через ensure_default_sources).
+    """
+    from bot.database import DEFAULT_SOURCES
+
+    expected = {
+        "https://t.me/marhrru",
+        "https://t.me/HRmother",
+        "https://t.me/kadrovik_krd",
+        "https://t.me/uptume",
+        "https://t.me/rus_hr",
+        "https://t.me/uvolnyaus",
+        "https://t.me/akks_career",
+        "https://t.me/rudakovahr",
+        "https://t.me/you_social",
+        "https://t.me/vacanciesbest",
+        "https://t.me/jobinspb",
+        "https://t.me/nongreta",
+    }
+    defaults_urls = {src["canonical_url"] for src in DEFAULT_SOURCES}
+    assert expected.issubset(defaults_urls)
+
+    sources = await db.list_sources(active_only=False)
+    stored_urls = {src["canonical_url"] for src in sources}
+    assert expected.issubset(stored_urls), f"Не хватает: {expected - stored_urls}"
+
+    # Каждый канал парсится через веб-превью t.me/s/<channel>
+    for src in sources:
+        if src["canonical_url"] in expected:
+            assert src["parse_url"] == src["canonical_url"].replace("https://t.me/", "https://t.me/s/")
+            assert src["source_type"] == "tg_channel"
+
+    # Повторный вызов ничего не дублирует
+    assert await db.ensure_default_sources() == 0
+
+
+def test_user_added_hr_channels_in_resource_catalog() -> None:
+    """Тест 11: те же каналы доступны в каталоге ресурсов (/find_resources)."""
+    from bot.services.resource_catalog import TELEGRAM_CHANNELS
+
+    catalog_usernames = {channel["username"] for channel in TELEGRAM_CHANNELS}
+    for username in (
+        "marhrru", "HRmother", "kadrovik_krd", "uptume", "rus_hr", "uvolnyaus",
+        "akks_career", "rudakovahr", "you_social", "vacanciesbest", "jobinspb", "nongreta",
+    ):
+        assert username in catalog_usernames, f"Канал {username} отсутствует в каталоге"
+
+
+@pytest.mark.asyncio
+async def test_retired_sources_excluded_from_search(db: Database) -> None:
+    """Тест 12: @fuck_the_frameworks и SuperJob выведены из поиска.
+
+    Их больше нет ни в DEFAULT_SOURCES, ни в каталоге; в уже созданной базе они
+    гасятся (is_active = 0), поэтому не парсятся и не дают предупреждений.
+    """
+    from bot.database import DEFAULT_SOURCES, RETIRED_SOURCES
+    from bot.services.resource_catalog import AGGREGATORS, TELEGRAM_CHANNELS
+
+    urls = {s["canonical_url"] for s in DEFAULT_SOURCES}
+    assert "https://t.me/fuck_the_frameworks" not in urls
+    assert "https://www.superjob.ru" not in urls
+    assert set(RETIRED_SOURCES) == {
+        "https://t.me/fuck_the_frameworks",
+        "https://www.superjob.ru",
+    }
+
+    assert "fuck_the_frameworks" not in {c["username"] for c in TELEGRAM_CHANNELS}
+    assert "https://www.superjob.ru" not in {a["url"] for a in AGGREGATORS}
+
+    # в старой базе записи остаются, но выключены
+    await db.add_source(
+        canonical_url="https://t.me/fuck_the_frameworks",
+        parse_url="https://t.me/s/fuck_the_frameworks",
+        source_type="tg_channel",
+        title="TG: fuck_the_frameworks (@fuck_the_frameworks)",
+    )
+    await db.add_source(
+        canonical_url="https://www.superjob.ru",
+        parse_url="https://www.superjob.ru/rss/job/",
+        source_type="website",
+        title="Сайт: SuperJob (superjob.ru)",
+    )
+    await db.ensure_default_sources()
+    active = {s["canonical_url"] for s in await db.list_sources(active_only=True)}
+    assert "https://t.me/fuck_the_frameworks" not in active
+    assert "https://www.superjob.ru" not in active
+
+
+def test_source_issues_are_reported_in_message() -> None:
+    """Тест 13: закрытое веб-превью попадает в отчёт, а не теряется молча."""
+    from datetime import datetime, timezone
+
+    from bot.services.vacancy_parser import format_vacancies_search_message
+
+    result = {
+        "period_days": 7,
+        "period_label": "1 неделя",
+        "role": "Директор по продажам",
+        "skills": ["Excel"],
+        "sources_checked": 22,
+        "total_found": 0,
+        "vacancies": [],
+        "source_issues": [
+            {
+                "title": "TG: DevOps Jobs - работа и аналитика (@devops_jobs)",
+                "url": "https://t.me/devops_jobs",
+                "reason": "канал не отдаёт публичное веб-превью",
+            }
+        ],
+    }
+    message = format_vacancies_search_message(result)
+    assert "не удалось прочитать" in message
+    assert "devops_jobs" in message
+    assert "веб-превью" in message
+
+
+INTL_SITES = {
+    "https://www.indeed.com/": "manual",
+    "https://www.glassdoor.com/": "manual",
+    "https://www.ziprecruiter.ie/": "manual",
+    "https://www.careerbuilder.com/": "manual",
+    "https://wantapply.com/": "manual",
+    "https://remote.co/": "manual",
+    "https://weworkremotely.com/": "website",
+    "https://remoteok.com/": "json_api",
+    "https://jobspresso.co/": "website",
+}
+
+
+@pytest.mark.asyncio
+async def test_international_sites_added(db: Database) -> None:
+    """Тест 14: 9 международных job-бордов добавлены в БД с правильной стратегией парсинга."""
+    from bot.database import DEFAULT_SOURCES
+
+    defaults = {s["canonical_url"]: s for s in DEFAULT_SOURCES}
+    for url, expected_type in INTL_SITES.items():
+        assert url in defaults, f"Нет в DEFAULT_SOURCES: {url}"
+        assert defaults[url]["source_type"] == expected_type, f"Неверный тип для {url}"
+
+    stored = {s["canonical_url"]: s for s in await db.list_sources(active_only=False)}
+    for url in INTL_SITES:
+        assert url in stored, f"Нет в БД: {url}"
+
+    # Автоматически парсимые борды используют RSS/API, а не обычную HTML-страницу
+    assert stored["https://remoteok.com/"]["parse_url"].endswith("/api")
+    assert stored["https://weworkremotely.com/"]["parse_url"].endswith(".rss")
+    assert "feed" in stored["https://jobspresso.co/"]["parse_url"]
+
+
+def test_international_sites_in_catalog() -> None:
+    """Тест 15: те же площадки доступны в каталоге /find_resources."""
+    from bot.services.resource_catalog import AGGREGATORS
+
+    urls = {a["url"] for a in AGGREGATORS}
+    for url in INTL_SITES:
+        assert url in urls, f"Нет в AGGREGATORS: {url}"
+
+
+def test_manual_board_links_built_from_resume_role() -> None:
+    """Тест 16: ссылки «ручных» бордов строятся под должность, без угадывания путей."""
+    from bot.services.resource_catalog import LINKS_DISCLAIMER
+    from bot.services.vacancy_parser import (
+        build_manual_board_link,
+        format_vacancies_search_blocks,
+    )
+
+    indeed_url, has_query = build_manual_board_link(
+        "https://www.indeed.com/", "Директор по продажам", 7
+    )
+    assert has_query is True
+    assert indeed_url.startswith("https://www.indeed.com/jobs?q=")
+    assert "fromage=7" in indeed_url
+
+    # Glassdoor: шаблона нет → открываем главную, честно помечаем
+    glassdoor_url, has_query = build_manual_board_link("https://www.glassdoor.com/", "CEO", 7)
+    assert has_query is False
+    assert glassdoor_url == "https://www.glassdoor.com/"
+
+    result = {
+        "period_days": 7,
+        "period_label": "1 неделя",
+        "role": "Директор по продажам",
+        "skills": ["Excel"],
+        "sources_checked": 31,
+        "total_found": 0,
+        "vacancies": [],
+        "source_issues": [],
+        "manual_sources": [
+            {"title": "Сайт: Indeed (indeed.com)", "url": "https://www.indeed.com/"},
+            {"title": "Сайт: Glassdoor (glassdoor.com)", "url": "https://www.glassdoor.com/"},
+        ],
+    }
+    body, footer = format_vacancies_search_blocks(result)
+    assert "Международные job-борды" in footer
+    assert "https://www.indeed.com/jobs?q=" in footer
+    assert "введите должность" in footer          # подсказка для Glassdoor
+    assert LINKS_DISCLAIMER in footer              # дисклеймер всегда в конце
+    assert "ручной поиск: 2" in body
+
+
+TGSTAT_CHANNELS = {
+    "theyseeku": "Finder.work: работа и вакансии",
+    "hh_ru_official": "hh.ru",
+    "zdemcv": "Ждём резюме | Лайфхакер",
+    "digital_jobster": "Джобстер Digital",
+    "hr_affiliate": "CPA HUNTER",
+    "rabota_freelancee": "Удаленка. Вакансии и резюме",
+    "bbe_jobs": "Точка входа",
+    "digitalbroccoli": "Brocli",
+    "rabota_go": "Работа GO",
+    "remote_w0rk": "Удаленка",
+    "Uyut_frilans": "Уютный Фриланс",
+    "workfreelancer": "Фрилансер: вакансии на удаленке",
+    "obn_rezume": "Обновите резюме!",
+    "HRTech_Jobs": "HR-Tech.Карьера",
+    "theyseeku_it": "Удаленка — IT и Digital",
+    "HR_Analytics_Jobs": "Вакансии в HR-Аналитике",
+    "work_looking": "Ищу работу | Диджитал",
+    "Easy_wrk": "Easy Work",
+    "jobcatcher": "Ловец вакансий",
+    "architect_career": "Архитектор Карьеры",
+    "ne_titanik_DG": "Карьера без паники",
+    "jobnulsya": "JOBнулся",
+}
+
+
+def test_tgstat_channels_no_duplicates() -> None:
+    """Тест 17: в базе и каталоге нет дублей (проверка перед добавлением подборки TGStat)."""
+    from bot.database import DEFAULT_SOURCES
+    from bot.services.resource_catalog import AGGREGATORS, TELEGRAM_CHANNELS
+
+    urls = [s["canonical_url"] for s in DEFAULT_SOURCES]
+    assert len(urls) == len(set(urls)), f"Дубли источников: {[u for u in set(urls) if urls.count(u) > 1]}"
+
+    usernames = [c["username"] for c in TELEGRAM_CHANNELS]
+    assert len(usernames) == len(set(usernames)), (
+        f"Дубли каналов: {[u for u in set(usernames) if usernames.count(u) > 1]}"
+    )
+
+    agg_urls = [a["url"] for a in AGGREGATORS]
+    assert len(agg_urls) == len(set(agg_urls)), "Дубли агрегаторов"
+
+    # Новые каналы не должны пересекаться с уже существовавшими
+    assert not (set(TGSTAT_CHANNELS) & {"marhrru", "rudakovahr", "habr_career", "job_it_ru"})
+
+
+@pytest.mark.asyncio
+async def test_tgstat_channels_added(db: Database) -> None:
+    """Тест 18: 22 канала из подборки TGStat есть в БД с корректными parse_url."""
+    from bot.database import DEFAULT_SOURCES
+    from bot.services.resource_catalog import TELEGRAM_CHANNELS
+
+    defaults = {s["canonical_url"]: s for s in DEFAULT_SOURCES}
+    stored = {s["canonical_url"] for s in await db.list_sources(active_only=False)}
+    catalog = {c["username"]: c for c in TELEGRAM_CHANNELS}
+
+    for username, name_part in TGSTAT_CHANNELS.items():
+        url = f"https://t.me/{username}"
+        assert url in defaults, f"Нет в DEFAULT_SOURCES: {url}"
+        assert defaults[url]["parse_url"] == f"https://t.me/s/{username}"
+        assert defaults[url]["source_type"] == "tg_channel"
+        assert url in stored, f"Нет в БД: {url}"
+
+        assert username in catalog, f"Нет в каталоге: {username}"
+        assert name_part.lower()[:10] in catalog[username]["name"].lower()
+
+    # Всего источников: 9 базовых + 13 + 9 международных + 22 из TGStat
+    # + 24 из второй подборки + 70 каналов и 16 сайтов третьей подборки
+    assert len(DEFAULT_SOURCES) == 163
+    # Повторный досев ничего не дублирует
+    assert await db.ensure_default_sources() == 0
+
+
+SECOND_BATCH = {
+    "irenaivanova_official": "Ирена_Иванова_official",
+    "larina_career": "Наталья Ларина",
+    "i_top_groups": "Я Топ",
+    "hrexpert63": "#ПерезагрузкаКарьеры",
+    "hrhack_career": "Abrashitova Natalya",
+    "prolearning": "Живое обучение",
+    "work_for_top": "КАРЬЕРА ЛИДЕРА",
+    "execselect": "Exec Select",
+    "vacancyCRC": "Вакансии от CRC",
+    "relocation_vacancies": "Вакансии с релокацией",
+    "hireproproduct": "Hire ProProduct",
+    "workfortop": "Work For TOP",
+    "fintech_jobs": "Fintech",
+    "talent_hunters": "Talent Hunters",
+    "ithr_tusovka": "IT HR тусовка",
+    "recommend_recruit": "Рекомендательный рекрутинг",
+    "ithunterio": "Смелый рекрутинг",
+    "trend_hr": "TrendHR",
+    "more_than_hr": "БОЛЬШЕ чем HR",
+    "toplevel_job": "TOP LEVEL JOB",
+    "tomato1000": "Senior Помідор",
+    "vsemmema": "ВСЕМ МЕМ",
+    "psoyuz": "ПРОМЫШЛЕННЫЙ СОЮЗ",
+    "elena_shebashova": "Елена Шебашова",
+    "zakadrom_hr": "HR-вакансии | ЗА КАДРОМ",
+}
+
+
+THIRD_BATCH = {
+    "forchiefs": "Job for Chiefs",
+    "vakansii_top_manager": "TOP Management",
+    "execcareer": "Executive Career",
+    "forproducts": "Job for Products",
+    "product_jobs": "Product Jobs",
+    "analytics_jobs": "Analytics Jobs",
+    "datasciencejobs": "Data Science Jobs",
+    "ru_pythonjobs": "Python Jobs",
+    "javadevjob": "JavaDevJob",
+    "golangjob": "Golang Jobs",
+    "mobiledevjob": "MobileDevJob",
+    "forallqa": "Job for QA",
+    "it_vakansii_jobs": "СЕТИ IT & Digital",
+    "fordesigner": "Job for Designers",
+    "designer_vacancies": "Вакансии для дизайнеров",
+    "forallmarketing": "Job for Marketing",
+    "dnative_job": "DNative Job",
+    "prvacant": "PR вакансии",
+    "vakansii_0": "Work Hunter",
+    "forallmedia": "Job for Media",
+    "perezvonyu": "Мы вам перезвоним",
+    "mskeventjob": "Event Hunter",
+    "forhr": "Job for HR",
+    "hr_jobs_rabota": "HR Jobs",
+    "hrorhr": "эйчарли",
+    "hrhubvacancy": "HR Хаб вакансии",
+    "hrhubvacancy300": "HR Хаб 300+",
+    "hrhubjunior": "HR Хаб Junior",
+    "legal_jobs": "Юридические вакансии",
+    "hellolawyer_jobs": "HelloLawyer Jobs",
+    "cfo_ifrs": "CFO / IFRS",
+    "cfosearch": "CFO Search",
+    "fintech_work": "Работа в финтехе",
+    "paymentcardjobs": "FintechJob",
+    "forallsales": "Job for Sales",
+    "sales_work": "Sales Work",
+    "sales_manager_job": "IT Sales Manager Jobs",
+    "salestalents": "Sales Talents",
+    "careerspace": "Careerspace",
+    "bizservisjob": "Вакансии в клиентском сервисе",
+    "cstalents": "Customer Success Talents",
+    "getassistant_vacancy": "GetAssistant",
+    "assisteca_job": "Ассистека",
+    "nanyatassistenta": "ИЩУ АССИСТЕНТА",
+    "pomochnik_vakansii": "Менеджер / Ассистент / Работа",
+    "mosinzproekt": "Мосинжпроект",
+    "jobinpharma": "ФАРМА. Вакансии",
+    "lapainpharma": "Лапа в фарме",
+    "pharmed_recruitment": "Pharma & Medical Recruitment",
+    "superjob_medicina": "Работа / Медицина / Вакансии",
+    "rujobinfood": "Общепит работа есть",
+    "expresswaiter": "Express Waiter",
+}
+
+# Каналы третьей подборки, которые существуют, но закрыли публичное веб-превью:
+# бот оставляет их в базе и честно сообщает причину в блоке source_issues.
+THIRD_BATCH_CLOSED_PREVIEW = (
+    "executive_jobs", "jobs_for_it_analyst", "devops_jobs", "javascript_jobs",
+    "java_jobs", "mobile_jobs", "uiux_jobs", "job_in_hr", "working_in_finance",
+    "work_in_accounting", "vacancii_construction", "job_in_med", "job_in_zdrav",
+    "horeca_hr", "expresswaiter_vacancy", "exwaiters",
+)
+
+
+@pytest.mark.asyncio
+async def test_second_batch_channels_added(db: Database) -> None:
+    """Тест 19: 24 канала из второй подборки добавлены, дубли с прежними исключены."""
+    from bot.database import DEFAULT_SOURCES
+    from bot.services.resource_catalog import TELEGRAM_CHANNELS
+
+    defaults = {s["canonical_url"]: s for s in DEFAULT_SOURCES}
+    stored = {s["canonical_url"] for s in await db.list_sources(active_only=False)}
+    catalog = {c["username"]: c for c in TELEGRAM_CHANNELS}
+
+    for username, name_part in SECOND_BATCH.items():
+        url = f"https://t.me/{username}"
+        assert url in defaults, f"Нет в DEFAULT_SOURCES: {url}"
+        assert defaults[url]["parse_url"] == f"https://t.me/s/{username}"
+        assert url in stored, f"Нет в БД: {url}"
+        assert username in catalog, f"Нет в каталоге: {username}"
+        assert name_part.lower()[:8] in catalog[username]["name"].lower()
+
+    # уже добавленные ранее каналы не должны дублироваться под другими именами
+    for old in ("akks_career", "jobinspb", "theyseeku", "vacanciesbest", "rus_hr", "you_social", "uptume"):
+        assert old in {u.replace("https://t.me/", "") for u in defaults}
+
+
+def test_sources_total_and_uniqueness() -> None:
+    """Тест 20: 163 источника, все уникальны; 135 каналов и 28 сайтов."""
+    from bot.database import DEFAULT_SOURCES
+    from bot.services.resource_catalog import TELEGRAM_CHANNELS
+
+    tg = [s for s in DEFAULT_SOURCES if s["source_type"] == "tg_channel"]
+    sites = [s for s in DEFAULT_SOURCES if s["source_type"] != "tg_channel"]
+    assert (len(tg), len(sites), len(DEFAULT_SOURCES)) == (135, 28, 163)
+    assert len({s["canonical_url"] for s in DEFAULT_SOURCES}) == 163
+    assert len({c["username"] for c in TELEGRAM_CHANNELS}) == len(TELEGRAM_CHANNELS)
+
+
+@pytest.mark.asyncio
+async def test_third_batch_channels_and_sites_added(db: Database) -> None:
+    """Тест 21: третья подборка — 70 каналов и 16 сайтов добавлены, дубли отсеяны."""
+    from bot.database import DEFAULT_SOURCES
+    from bot.services.resource_catalog import AGGREGATORS, TELEGRAM_CHANNELS
+
+    defaults = {s["canonical_url"].lower(): s for s in DEFAULT_SOURCES}
+    stored = {s["canonical_url"].lower() for s in await db.list_sources(active_only=False)}
+    catalog = {c["username"].lower(): c for c in TELEGRAM_CHANNELS}
+
+    # Telegram-никие регистронезависимы: дублей «ExecCareer»/«execcareer» быть не должно
+    assert len(defaults) == len(DEFAULT_SOURCES)
+
+    for username, name_part in THIRD_BATCH.items():
+        url = f"https://t.me/{username}"
+        assert url.lower() in defaults, f"Нет в DEFAULT_SOURCES: {url}"
+        assert defaults[url.lower()]["parse_url"].lower() == f"https://t.me/s/{username}".lower()
+        assert url.lower() in stored, f"Нет в БД: {url}"
+        assert username.lower() in catalog, f"Нет в каталоге: {username}"
+        assert name_part.lower()[:8] in catalog[username.lower()]["name"].lower()
+
+    # каналы с закрытым веб-превью остаются в базе (бот сообщит причину, а не промолчит)
+    for username in THIRD_BATCH_CLOSED_PREVIEW:
+        assert f"https://t.me/{username}".lower() in defaults, f"Нет в DEFAULT_SOURCES: {username}"
+
+    # дубли из присланного списка не добавились повторно
+    for dup in ("vacancyCRC", "vacanciesbest", "rabota_freelancee"):
+        assert f"https://t.me/{dup}".lower() in defaults
+
+    # новые сайты: API «Работа России», две HTML-ленты и ручные площадки
+    assert defaults["https://trudvsem.ru"]["parse_url"] == "https://opendata.trudvsem.ru/api/v1/vacancies"
+    assert defaults["https://budu.jobs/"]["source_type"] == "website"
+    assert defaults["https://remote-job.ru/"]["source_type"] == "website"
+    for manual in (
+        "https://facancy.ru/", "https://kwork.ru/", "https://www.fl.ru/",
+        "https://youdo.com/", "https://ru.jooble.org/", "https://wellfound.com/jobs",
+    ):
+        assert defaults[manual]["source_type"] == "manual"
+
+    agg_urls = {a["url"] for a in AGGREGATORS}
+    for site in ("https://budu.jobs/", "https://remote-job.ru/", "https://kwork.ru/", "https://www.fl.ru/"):
+        assert site in agg_urls, f"Нет в каталоге агрегаторов: {site}"
+
+
+def test_trudvsem_api_parser() -> None:
+    """Тест 22: открытые данные «Работа России» разбираются в вакансии."""
+    from datetime import datetime, timedelta, timezone
+
+    from bot.services.vacancy_parser import parse_trudvsem_api
+
+    payload = {
+        "status": "200",
+        "meta": {"total": 1, "limit": 1},
+        "results": {
+            "vacancies": [
+                {
+                    "vacancy": {
+                        "id": "abc",
+                        "job-name": "Директор по маркетингу",
+                        "company": {"name": "ООО Тест"},
+                        "region": {"name": "Москва"},
+                        "date_modify": "2026-11-17T09:51:54+0300",
+                        "salary_min": "150000",
+                        "salary_max": "200000",
+                        "duty": "Управление маркетингом, бюджет, команда",
+                        "requirements": "Опыт 5 лет, CRM",
+                        "employment": "Полная занятость",
+                        "vac_url": "https://trudvsem.ru/vacancy/card/1/abc",
+                    }
+                }
+            ]
+        },
+    }
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    result = parse_trudvsem_api(
+        json_text=__import__("json").dumps(payload, ensure_ascii=False),
+        source={"canonical_url": "https://trudvsem.ru", "title": "Сайт: Работа России (trudvsem.ru API)"},
+        role="Директор по маркетингу",
+        skills=["маркетинг", "бюджет"],
+        cutoff_dt=cutoff,
+    )
+    assert len(result) == 1
+    vacancy = result[0]
+    assert "Директор по маркетингу" in vacancy["title"]
+    assert vacancy["url"] == "https://trudvsem.ru/vacancy/card/1/abc"
+    assert vacancy["relevance_score"] > 0
+    assert vacancy["published_at"] >= cutoff
+
+    # пустой ответ и битый JSON не ломают поиск
+    assert parse_trudvsem_api("{}", {"canonical_url": "https://trudvsem.ru"}, "роль", [], cutoff) == []
+    assert parse_trudvsem_api("не json", {"canonical_url": "https://trudvsem.ru"}, "роль", [], cutoff) == []
