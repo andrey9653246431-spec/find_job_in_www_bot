@@ -121,6 +121,68 @@
 
 ---
 
+## 🌍 Международные job-борды (добавлены 18.11.2026)
+
+Проверка показала, что площадки делятся на две группы — бот ведёт себя с ними по-разному:
+
+| Площадка | Ссылка | Как работает |
+|---|---|---|
+| RemoteOK | https://remoteok.com/ | ✅ **автопоиск** через открытый JSON API (`/api`) |
+| We Work Remotely | https://weworkremotely.com/ | ✅ **автопоиск** через RSS (`/remote-jobs.rss`) |
+| Jobspresso | https://jobspresso.co/ | ✅ **автопоиск** через RSS (`?post_type=job_listing`) |
+| Indeed | https://www.indeed.com/ | 🔗 ручной поиск (HTTP 403, Cloudflare) + deep-link `?q=&fromage=` |
+| Glassdoor | https://www.glassdoor.com/ | 🔗 ручной поиск (Security-страница вместо контента) |
+| ZipRecruiter (IE) | https://www.ziprecruiter.ie/ | 🔗 ручной поиск (Cloudflare) + `?search=` |
+| CareerBuilder | https://www.careerbuilder.com/ | 🔗 ручной поиск (403) + `?keywords=` |
+| WantApply | https://wantapply.com/ | 🔗 ручной поиск (Cloudflare) + `?s=` |
+| Remote.co | https://remote.co/ | 🔗 ручной поиск (с хостинга GitHub недоступен — таймаут) |
+
+**Что это даёт в боте:** автоматически парсимые борды попадают в общий список найденных вакансий, а «ручные» показываются отдельным блоком в конце выдачи — ссылки уже подставляют должность из вашего резюме и период поиска:
+
+```
+🌍 Международные job-борды (ручной поиск):
+• Indeed — открыть поиск  →  https://www.indeed.com/jobs?q=Project+Manager&fromage=7
+• ZipRecruiter IE — …     →  https://www.ziprecruiter.ie/jobs?search=Project+Manager
+• Glassdoor — …           →  https://www.glassdoor.com/ (введите должность в строке поиска)
+```
+
+Дисклеймер о смене ссылок теперь всегда в самом конце сообщения — даже если список вакансий длинный и разбивается на две части.
+
+---
+
+## 📡 База источников вакансий (по умолчанию 31 ресурс)
+
+Предзаполненные источники (`DEFAULT_SOURCES` в `bot/database.py`) — все проверены на публичное веб-превью `https://t.me/s/<channel>`:
+
+**HR и карьера (12 каналов, добавлены по запросу пользователя):**
+
+| Канал | Ссылка |
+|---|---|
+| МарЧар \| Маркетинг в HR | https://t.me/marhrru |
+| HR мама 🍋 | https://t.me/HRmother |
+| Кадровый голод | https://t.me/kadrovik_krd |
+| Аптуми (up to me) | https://t.me/uptume |
+| Русский HR | https://t.me/rus_hr |
+| Всё, я увольняюсь! | https://t.me/uvolnyaus |
+| АККСиомы Карьеры | https://t.me/akks_career |
+| 🔎 Вакансии от Хрипченко Ани | https://t.me/rudakovahr |
+| Янг Групп | https://t.me/you_social |
+| Лучшие вакансии | https://t.me/vacanciesbest |
+| Топовые вакансии \| Петр Липов | https://t.me/jobinspb |
+| Неустойчивое развитие | https://t.me/nongreta |
+| fuck_the_frameworks \| рынок труда, HR, автоотказы | https://t.me/fuck_the_frameworks |
+
+**IT и общие вакансии:** `t.me/habr_career`, `t.me/job_it_ru`, `t.me/vacancies_it`, `t.me/remote_work_jobs`, `t.me/marketing_jobs`
+**Сайты:** `hh.ru` (API), `career.habr.com` (RSS), `superjob.ru` (RSS), `geekjob.ru`
+
+Особенности:
+- `Database.ensure_default_sources()` досеивает новые источники **и в уже существующую базу** (вызывается при старте бота), поэтому каналы появляются без потери пользовательских данных.
+- Все 12 каналов также попали в каталог `/find_resources` (теперь 20 каналов, 11 агрегаторов, 30 компаний).
+- Заголовок вакансии берётся из первой «содержательной» строки поста — эмодзи-строки (`🔥`, `🆕`) пропускаются (`_pick_title_and_snippet`).
+- Если источник не удалось прочитать (канал закрыл веб-превью, HTTP-ошибка, сеть) — это **не теряется молча**: блок «⚠️ Часть источников не удалось прочитать» в конце выдачи с причиной и ссылкой (`source_issues`).
+
+---
+
 ## 🧩 Профиль резюме: должность и навыки (`/set_role`, `/set_skills`, `/reset_profile`)
 
 При загрузке резюме бот сам определяет **целевую должность** и **ключевые навыки** (`build_resume_profile()`), которые затем используются в поиске вакансий и в адаптации под стандарты.

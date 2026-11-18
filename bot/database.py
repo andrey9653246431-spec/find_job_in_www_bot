@@ -43,6 +43,143 @@ DEFAULT_SOURCES: List[Dict[str, str]] = [
         "source_type": "tg_channel",
         "title": "TG: marketing jobs (@marketing_jobs)",
     },
+    # --- HR, карьера и вакансии (добавлено по запросу пользователя, проверено 18.11.2026) ---
+    {
+        "canonical_url": "https://t.me/marhrru",
+        "parse_url": "https://t.me/s/marhrru",
+        "source_type": "tg_channel",
+        "title": "TG: МарЧар | Маркетинг в HR (@marhrru)",
+    },
+    {
+        "canonical_url": "https://t.me/HRmother",
+        "parse_url": "https://t.me/s/HRmother",
+        "source_type": "tg_channel",
+        "title": "TG: HR мама 🍋 (@HRmother)",
+    },
+    {
+        "canonical_url": "https://t.me/kadrovik_krd",
+        "parse_url": "https://t.me/s/kadrovik_krd",
+        "source_type": "tg_channel",
+        "title": "TG: Кадровый голод (@kadrovik_krd)",
+    },
+    {
+        "canonical_url": "https://t.me/uptume",
+        "parse_url": "https://t.me/s/uptume",
+        "source_type": "tg_channel",
+        "title": "TG: Аптуми (up to me) (@uptume)",
+    },
+    {
+        "canonical_url": "https://t.me/rus_hr",
+        "parse_url": "https://t.me/s/rus_hr",
+        "source_type": "tg_channel",
+        "title": "TG: Русский HR (@rus_hr)",
+    },
+    {
+        "canonical_url": "https://t.me/uvolnyaus",
+        "parse_url": "https://t.me/s/uvolnyaus",
+        "source_type": "tg_channel",
+        "title": "TG: Всё, я увольняюсь! (@uvolnyaus)",
+    },
+    {
+        "canonical_url": "https://t.me/akks_career",
+        "parse_url": "https://t.me/s/akks_career",
+        "source_type": "tg_channel",
+        "title": "TG: АККСиомы Карьеры (@akks_career)",
+    },
+    {
+        "canonical_url": "https://t.me/rudakovahr",
+        "parse_url": "https://t.me/s/rudakovahr",
+        "source_type": "tg_channel",
+        "title": "TG: Вакансии от Хрипченко Ани (@rudakovahr)",
+    },
+    {
+        "canonical_url": "https://t.me/you_social",
+        "parse_url": "https://t.me/s/you_social",
+        "source_type": "tg_channel",
+        "title": "TG: Янг Групп (@you_social)",
+    },
+    {
+        "canonical_url": "https://t.me/vacanciesbest",
+        "parse_url": "https://t.me/s/vacanciesbest",
+        "source_type": "tg_channel",
+        "title": "TG: Лучшие вакансии (@vacanciesbest)",
+    },
+    {
+        "canonical_url": "https://t.me/jobinspb",
+        "parse_url": "https://t.me/s/jobinspb",
+        "source_type": "tg_channel",
+        "title": "TG: Топовые вакансии | Петр Липов (@jobinspb)",
+    },
+    {
+        "canonical_url": "https://t.me/fuck_the_frameworks",
+        "parse_url": "https://t.me/s/fuck_the_frameworks",
+        "source_type": "tg_channel",
+        "title": "TG: fuck_the_frameworks (@fuck_the_frameworks)",
+    },
+    {
+        "canonical_url": "https://t.me/nongreta",
+        "parse_url": "https://t.me/s/nongreta",
+        "source_type": "tg_channel",
+        "title": "TG: Неустойчивое развитие (@nongreta)",
+    },
+    # --- Международные job-борды (проверено 18.11.2026) ---
+    # Автопарсинг возможен: RemoteOK (JSON API), We Work Remotely и Jobspresso (RSS)
+    {
+        "canonical_url": "https://remoteok.com/",
+        "parse_url": "https://remoteok.com/api",
+        "source_type": "json_api",
+        "title": "Сайт: RemoteOK (remoteok.com, JSON API)",
+    },
+    {
+        "canonical_url": "https://weworkremotely.com/",
+        "parse_url": "https://weworkremotely.com/remote-jobs.rss",
+        "source_type": "website",
+        "title": "Сайт: We Work Remotely (weworkremotely.com, RSS)",
+    },
+    {
+        "canonical_url": "https://jobspresso.co/",
+        "parse_url": "https://jobspresso.co/feed/?post_type=job_listing",
+        "source_type": "website",
+        "title": "Сайт: Jobspresso (jobspresso.co, RSS)",
+    },
+    # Ручной поиск: площадки отвечают 403 (Cloudflare) или недоступны с хостинга —
+    # бот не парсит их, но показывает готовые ссылки поиска под профиль.
+    {
+        "canonical_url": "https://www.indeed.com/",
+        "parse_url": "https://www.indeed.com/",
+        "source_type": "manual",
+        "title": "Сайт: Indeed (indeed.com)",
+    },
+    {
+        "canonical_url": "https://www.glassdoor.com/",
+        "parse_url": "https://www.glassdoor.com/",
+        "source_type": "manual",
+        "title": "Сайт: Glassdoor (glassdoor.com)",
+    },
+    {
+        "canonical_url": "https://www.ziprecruiter.ie/",
+        "parse_url": "https://www.ziprecruiter.ie/",
+        "source_type": "manual",
+        "title": "Сайт: ZipRecruiter IE (ziprecruiter.ie)",
+    },
+    {
+        "canonical_url": "https://www.careerbuilder.com/",
+        "parse_url": "https://www.careerbuilder.com/",
+        "source_type": "manual",
+        "title": "Сайт: CareerBuilder (careerbuilder.com)",
+    },
+    {
+        "canonical_url": "https://wantapply.com/",
+        "parse_url": "https://wantapply.com/",
+        "source_type": "manual",
+        "title": "Сайт: WantApply (wantapply.com)",
+    },
+    {
+        "canonical_url": "https://remote.co/",
+        "parse_url": "https://remote.co/",
+        "source_type": "manual",
+        "title": "Сайт: Remote.co (remote.co)",
+    },
     # Сайты и агрегаторы вакансий
     {
         "canonical_url": "https://hh.ru",
@@ -146,6 +283,43 @@ class Database:
                         ),
                     )
                 await db.commit()
+
+    async def ensure_default_sources(self) -> int:
+        """Добавляет отсутствующие источники по умолчанию в уже существующую базу.
+
+        Нужен, чтобы новые ТГ-каналы и сайты из DEFAULT_SOURCES появлялись и у тех
+        пользователей, у которых база была создана раньше (иначе предзаполнение
+        срабатывает только на пустой таблице `sources`).
+
+        Возвращает количество добавленных источников.
+        """
+        added = 0
+        now_iso = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            for src in DEFAULT_SOURCES:
+                cursor = await db.execute(
+                    "SELECT 1 FROM sources WHERE canonical_url = ?",
+                    (src["canonical_url"],),
+                )
+                if await cursor.fetchone():
+                    continue
+                await db.execute(
+                    """
+                    INSERT OR IGNORE INTO sources
+                    (canonical_url, parse_url, source_type, title, added_by_user_id, is_active, created_at)
+                    VALUES (?, ?, ?, ?, 0, 1, ?)
+                    """,
+                    (
+                        src["canonical_url"],
+                        src["parse_url"],
+                        src["source_type"],
+                        src["title"],
+                        now_iso,
+                    ),
+                )
+                added += 1
+            await db.commit()
+        return added
 
     # =========================================================================
     # Работа с резюме (Отдельная функция сохранения и чтения резюме в БД)
