@@ -96,6 +96,23 @@ async def main() -> None:
 
     await setup_bot_commands(bot)
 
+    try:
+        from bot.services.llm_client import build_providers
+
+        _providers = build_providers()
+        if _providers:
+            logger.info(
+                "LLM для адаптации резюме: %s",
+                ", ".join(f"{p.label} ({p.model})" for p in _providers),
+            )
+        else:
+            logger.info(
+                "LLM-ключи не заданы — адаптация резюме идёт встроенным локальным движком "
+                "(команда /llm подскажет, как подключить бесплатную модель)"
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Не удалось определить LLM-провайдеров: %s", exc)
+
     logger.info("Бот успешно запущен и ожидает сообщений...")
     try:
         await dp.start_polling(bot)

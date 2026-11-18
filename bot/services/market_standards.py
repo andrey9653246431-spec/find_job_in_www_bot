@@ -17,6 +17,8 @@ from docx import Document
 from docx.shared import Pt
 from bot.config import config
 from bot.database import Database
+from bot.services import llm_client
+from bot.services.llm_client import LLMResult, generate_text
 
 # =============================================================================
 # ЗОЛОТОЙ СТАНДАРТ: АРХИТЕКТУРА ИДЕАЛЬНОГО EXECUTIVE CV (Framework 2026+)
@@ -1345,66 +1347,42 @@ async def _rewrite_resume_via_free_llm(
     extracted_role: str,
     extracted_skills: List[str],
     standards: Dict[str, Any],
-) -> Optional[str]:
-    """Если в .env задан бесплатный ключ LLM_API_KEY (Groq / OpenRouter Free / Ollama),
-    выполняет интеллектуальную переработку резюме строго по архитектуре Executive CV (Framework 2026+)
-    и заданным стандартам рынка.
-    """
-    if not config.llm_api_key:
-        return None
+) -> Optional["LLMResult"]:
+    """Переписывает резюме бесплатной LLM (Gemini / Groq / Cerebras / Mistral / OpenRouter / Ollama).
 
+    Провайдеры перебираются по очереди (см. ``bot/services/llm_client.py``):
+    если у одного кончилась квота или он вернул мусор, запрос уходит следующему.
+    Возвращает объект с текстом и подписью модели либо ``None`` — тогда бот
+    использует встроенный локальный архитектор резюме.
+    """
     system_prompt = (
         "Ты — топовый Executive Career Coach и архитектор резюме уровня C-level / Senior.\n"
-        "Твоя задача — сформировать идеальное резюме кандидата СТРОГО по следующим требованиям и стандартам рынка:\n\n"
+        "Твоя задача — переписать резюме кандидата СТРОГО по требованиям стандарта рынка.\n\n"
         f"Название стандарта: {standards.get('title')}\n"
         f"Обязательные разделы: {', '.join(standards.get('required_sections', []))}\n\n"
         f"Детальные требования стандарта:\n{standards.get('standards_text')}\n\n"
-        "Соблюдай все 4 фильтра упаковки:\n"
-        "1. Evidence Map (максимум 2 страницы, не более 4 буллитов результатов на каждую роль).\n"
-        "2. Attribution (разделяй личный вклад и командный результат).\n"
-        "3. Борьба с Red Flags (никаких фото, дат рождения, семейного положения и штампов вроде «ответственный и коммуникабельный»).\n"
-        "4. Один фокус — один экран (верх первой страницы должен продавать кандидата за 7–30 секунд).\n"
-        "Ответ верни на русском языке в чёткой структуре Markdown."
+        "Соблюдай 4 фильтра упаковки:\n"
+        "1. Evidence Map — максимум 2 страницы, не более 4 буллитов результатов на роль.\n"
+        "2. Attribution — отделяй личный вклад от командного результата.\n"
+        "3. Red Flags — никаких фото, дат рождения, семейного положения, "
+        "штампов вроде «ответственный и коммуникабельный».\n"
+        "4. Один фокус — один экран: верх первой страницы продаёт кандидата за 7–30 секунд.\n\n"
+        "Жёсткие правила:\n"
+        "- НЕ выдумывай факты, компании, цифры и даты, которых нет в исходном резюме. "
+        "Если метрики нет — оставь место для уточнения: «[уточнить: доля выручки]».\n"
+        "- Формулировки результатов: глагол действия + метрика + механизм/влияние.\n"
+        "- Язык — русский, деловой, без канцелярита и местоимения «я».\n"
+        "- Выведи ТОЛЬКО готовое резюме в Markdown (заголовки разделов через ##), "
+        "без вступлений, пояснений и вопросов."
     )
 
-    payload = {
-        "model": config.llm_model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {
-                "role": "user",
-                "content": (
-                    f"Целевая роль: {extracted_role}\n"
-                    f"Распознанные навыки: {', '.join(extracted_skills)}\n\n"
-                    f"Исходный текст резюме:\n{raw_text}"
-                ),
-            },
-        ],
-        "temperature": 0.25,
-    }
-    headers = {
-        "Authorization": f"Bearer {config.llm_api_key}",
-        "Content-Type": "application/json",
-    }
-    url = f"{config.llm_base_url.rstrip('/')}/chat/completions"
+    user_prompt = (
+        f"Целевая роль: {extracted_role}\n"
+        f"Распознанные навыки: {', '.join(extracted_skills)}\n\n"
+        f"Исходный текст резюме:\n{raw_text}"
+    )
 
-    try:
-        timeout = aiohttp.ClientTimeout(total=20)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(url, json=payload, headers=headers) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    content = (
-                        data.get("choices", [{}])[0]
-                        .get("message", {})
-                        .get("content", "")
-                        .strip()
-                    )
-                    if content:
-                        return content
-    except Exception:
-        return None
-    return None
+    return await generate_text(system_prompt, user_prompt, temperature=0.25)
 
 
 async def adapt_resume_to_market_standards(
@@ -1430,17 +1408,17 @@ async def adapt_resume_to_market_standards(
         standards=standards,
     )
 
-    adapted_text = await _rewrite_resume_via_free_llm(
+    llm_result = await _rewrite_resume_via_free_llm(
         raw_text=raw_text,
         extracted_role=extracted_role,
         extracted_skills=extracted_skills,
         standards=standards,
     )
-    engine_used = (
-        "LLM API (Executive CV 2026+ Prompt)"
-        if adapted_text
-        else "Архитектор Executive CV (Framework 2026+ Золотой стандарт)"
-    )
+    adapted_text = llm_result.text if llm_result else None
+    if llm_result:
+        engine_used = f"Бесплатная LLM: {llm_result.engine_label}"
+    else:
+        engine_used = "Архитектор Executive CV (Framework 2026+ Золотой стандарт, локальный)"
 
     if not adapted_text:
         adapted_text = _rewrite_resume_locally(
@@ -1459,6 +1437,7 @@ async def adapt_resume_to_market_standards(
         "standards": standards,
         "audit": audit,
         "engine_used": engine_used,
+        "llm_attempts": list(llm_client.LAST_ATTEMPTS),
         "docx_bytes": docx_bytes,
         "extracted_role": extracted_role,
         "extracted_skills": extracted_skills,

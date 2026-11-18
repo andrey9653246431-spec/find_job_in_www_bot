@@ -51,9 +51,56 @@ async def cmd_help(message: Message) -> None:
         "• `/sources` или кнопка **🌐 Источники вакансий** — управление базой сайтов и ТГ-каналов.\n"
         "• `/add_source <ссылка>` — быстро добавить сайт или ТГ-канал в базу данных.\n"
         "• `/my_resume` или кнопка **📄 Моё резюме** — посмотреть текущий профиль резюме.\n"
+        "• `/llm` — показать, какая бесплатная LLM подключена для адаптации резюме "
+        "(и что ответил провайдер при последнем вызове).\n"
         "• `/cancel` — отменить текущий ввод."
     )
     await message.answer(text, reply_markup=get_main_menu_keyboard(), parse_mode="Markdown")
+
+
+@router.message(Command("llm"))
+async def cmd_llm_status(message: Message) -> None:
+    """Показывает, какая бесплатная LLM подключена и что случилось при последнем вызове."""
+    from bot.services.llm_client import LAST_ATTEMPTS, build_providers
+
+    providers = build_providers()
+    if not providers:
+        text = (
+            "🤖 **LLM не подключена** — адаптация резюме идёт встроенным локальным архитектором.\n\n"
+            "**Как включить бесплатную модель (5 минут):**\n"
+            "1. Возьмите бесплатный ключ у одного из провайдеров:\n"
+            "   • **Google Gemini** — https://aistudio.google.com/apikey (без карты)\n"
+            "   • **Groq** — https://console.groq.com/keys (без карты, быстрый Llama 3.3 70B)\n"
+            "   • **Cerebras** — https://cloud.cerebras.ai (1 млн токенов/день)\n"
+            "   • **Mistral** — https://console.mistral.ai (Experiment tier)\n"
+            "   • **OpenRouter** — https://openrouter.ai/keys (модели с суффиксом `:free`)\n"
+            "2. Добавьте ключ в GitHub: **Settings → Secrets and variables → Actions → New repository secret**:\n"
+            "   имя `GEMINI_API_KEY` (или `GROQ_API_KEY`), значение — сам ключ.\n"
+            "3. Перезапустите **Actions → run_bot → Run workflow**.\n\n"
+            "_Можно задать несколько ключей — бот будет пробовать их по очереди._"
+        )
+        await message.answer(text, parse_mode="Markdown", disable_web_page_preview=True)
+        return
+
+    lines = ["🤖 **Подключённые бесплатные LLM (порядок перебора):**"]
+    for index, provider in enumerate(providers, start=1):
+        lines.append(
+            f"{index}. {provider.label} — модель `{provider.model}`"
+        )
+    lines.append("")
+    if LAST_ATTEMPTS:
+        lines.append("**Последний вызов:**")
+        for attempt in LAST_ATTEMPTS:
+            lines.append(f"• {attempt}")
+    else:
+        lines.append("_С момента запуска бота LLM ещё не вызывалась._")
+    lines.append("")
+    lines.append(
+        "Поменять порядок: секрет `LLM_ORDER` (например `groq,gemini`). "
+        "Выбрать единственного провайдера: `LLM_PROVIDER`. "
+        "Другая модель: `GEMINI_MODEL`, `GROQ_MODEL`, `CEREBRAS_MODEL`, `OPENROUTER_MODEL`."
+    )
+    await message.answer("\n".join(lines), parse_mode="Markdown", disable_web_page_preview=True)
 
 
 @router.message(Command("cancel"))

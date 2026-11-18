@@ -177,6 +177,24 @@ async def handle_resume_text(
 # 2. ОТДЕЛЬНАЯ ФУНКЦИЯ АДАПТАЦИИ РЕЗЮМЕ ПОД СТАНДАРТЫ РЫНКА
 # =============================================================================
 
+def _llm_warning(result: dict) -> str:
+    """Если LLM была настроена, но не ответила, — говорим об этом прямо."""
+    engine = (result.get("engine_used") or "")
+    attempts = result.get("llm_attempts") or []
+    if "Локальный" in engine or "локальный" in engine:
+        if attempts:
+            details = "; ".join(attempts[:4])
+            return (
+                f"⚠️ Бесплатная LLM не ответила ({escape_markdown(details)}) — "
+                "резюме собрано встроенным движком. Проверить настройки: `/llm`\n"
+            )
+        return (
+            "💡 Подключите бесплатную LLM (Gemini / Groq / Cerebras) — качество "
+            "переработки заметно выше. Инструкция: `/llm`\n"
+        )
+    return ""
+
+
 async def _run_adaptation_flow(message: Message, user_id: int, db: Database) -> None:
     """Выполняет адаптацию резюме под активные стандарты рынка и отправляет отчёт + DOCX."""
     wait_msg = await message.answer(
@@ -204,7 +222,9 @@ async def _run_adaptation_flow(message: Message, user_id: int, db: Database) -> 
             "✨ **Резюме адаптировано под стандарты рынка!**\n\n"
             f"📐 **Применённый стандарт:** {standards['title']}\n"
             f"📊 **Индекс соответствия стандарту (ATS Score):** `{audit['score']}/100%`\n"
-            f"🤖 **Модуль обработки:** {result['engine_used']}\n\n"
+            f"🤖 **Модуль обработки:** {result['engine_used']}\n"
+            + _llm_warning(result)
+            + "\n"
             f"**Сильные стороны:**\n{strengths_txt}\n\n"
             f"**Выполненные улучшения и рекомендации стандарта:**\n{improvements_txt}\n"
             "━━━━━━━━━━━━━━━━━━━━\n\n"

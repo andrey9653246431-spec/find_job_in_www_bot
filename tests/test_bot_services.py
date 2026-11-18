@@ -1952,3 +1952,236 @@ async def test_profile_edit_marks_manual_and_survives_restart_flow(db: Database)
     assert record["extracted_role"] == "Директор"
     assert record["extracted_skills"] == ["Excel", "P&L"]
     assert record["profile_edited_manually"] == 1
+
+
+# =============================================================================
+# Подключение бесплатной LLM (Gemini / Groq / Cerebras / Mistral / OpenRouter / Ollama)
+# =============================================================================
+
+_GOOD_ANSWER = "## ПРОФЕССИОНАЛЬНЫЙ ОПЫТ\n" + ("- Вывел продукт на рынок, +38% выручки. " * 12)
+
+
+class _FakeLLMResponse:
+    def __init__(self, status: int, payload) -> None:
+        self.status = status
+        self._payload = payload
+
+    async def text(self, *args, **kwargs):
+        return self._payload if isinstance(self._payload, str) else "{}"
+
+    async def json(self):
+        return self._payload
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+
+class _FakeLLMSession:
+    """Подменяет aiohttp.ClientSession: отдаёт заранее заданные ответы по URL."""
+
+    calls: list = []
+
+    def __init__(self, handler, **kwargs) -> None:
+        self.handler = handler
+        self.__class__.calls = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+    def post(self, url, json=None, headers=None):
+        type(self).calls.append({"url": url, "json": json, "headers": headers})
+        status, payload = self.handler(url, json, headers)
+        return _FakeLLMResponse(status, payload)
+
+
+def _openai_answer(text: str) -> dict:
+    return {"choices": [{"message": {"content": text}}]}
+
+
+def _gemini_answer(text: str) -> dict:
+    return {"candidates": [{"content": {"parts": [{"text": text}]}}]}
+
+
+def _install_fake_session(monkeypatch, handler) -> None:
+    from bot.services import llm_client
+
+    monkeypatch.setattr(
+        llm_client.aiohttp, "ClientSession", lambda **kwargs: _FakeLLMSession(handler)
+    )
+
+
+def test_llm_providers_are_built_from_env(monkeypatch) -> None:
+    """Тест 48: провайдеры собираются из переменных окружения, порядок задаётся LLM_ORDER."""
+    from bot.services import llm_client
+
+    for name in ("LLM_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "GROQ_API_KEY",
+                 "CEREBRAS_API_KEY", "MISTRAL_API_KEY", "OPENROUTER_API_KEY",
+                 "LLM_PROVIDER", "LLM_ORDER"):
+        monkeypatch.delenv(name, raising=False)
+
+    assert llm_client.build_providers() == [], "без ключей провайдеров нет"
+
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-test-key-123456")
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-test-key-123456")
+    keys = [p.key for p in llm_client.build_providers()]
+    assert keys == ["gemini", "groq"]
+
+    monkeypatch.setenv("LLM_ORDER", "groq,gemini")
+    assert [p.key for p in llm_client.build_providers()] == ["groq", "gemini"]
+
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    assert [p.key for p in llm_client.build_providers()] == ["gemini"]
+    monkeypatch.delenv("LLM_PROVIDER")
+
+    # ключ в чате показывается замаскированным
+    masked = llm_client.build_providers()[0].masked_key()
+    assert masked.startswith("gsk") and "…" in masked and "test-key" not in masked
+
+
+@pytest.mark.asyncio
+async def test_llm_falls_back_to_second_provider_on_quota(monkeypatch) -> None:
+    """Тест 49: если у провайдера кончилась квота (429), запрос уходит следующему."""
+    from bot.services import llm_client
+
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-test")
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+    monkeypatch.setenv("LLM_ORDER", "gemini,groq")
+
+    def handler(url, payload, headers):
+        if "generativelanguage" in url:
+            return 429, "quota exceeded"
+        return 200, _openai_answer(_GOOD_ANSWER)
+
+    _install_fake_session(monkeypatch, handler)
+    result = await llm_client.generate_text("system", "user")
+
+    assert result is not None
+    assert "Groq" in result.provider_label
+    assert result.text.startswith("## ПРОФЕССИОНАЛЬНЫЙ ОПЫТ")
+    assert any("HTTP 429" in a for a in result.attempts)
+    assert llm_client.LAST_RESULT is result
+
+
+@pytest.mark.asyncio
+async def test_llm_gemini_request_shape(monkeypatch) -> None:
+    """Тест 50: для Gemini используется нативный эндпоинт с system_instruction."""
+    from bot.services import llm_client
+
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-test")
+    monkeypatch.setenv("LLM_ORDER", "gemini")
+
+    def handler(url, payload, headers):
+        return 200, _gemini_answer(_GOOD_ANSWER)
+
+    _install_fake_session(monkeypatch, handler)
+    result = await llm_client.generate_text("Ты коуч", "Резюме")
+
+    assert result is not None and "Gemini" in result.provider_label
+    call = _FakeLLMSession.calls[0]
+    assert call["url"].endswith(":generateContent")
+    assert "/models/gemini-2.5-flash" in call["url"]
+    assert call["headers"]["x-goog-api-key"] == "AIza-test"
+    assert call["json"]["system_instruction"]["parts"][0]["text"] == "Ты коуч"
+    assert call["json"]["contents"][0]["parts"][0]["text"] == "Резюме"
+
+
+@pytest.mark.asyncio
+async def test_llm_skips_refusals_and_short_answers(monkeypatch) -> None:
+    """Тест 51: вежливый отказ и слишком короткий ответ считаются неудачей провайдера."""
+    from bot.services import llm_client
+
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-test")
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+    monkeypatch.setenv("LLM_ORDER", "gemini,groq")
+
+    def handler(url, payload, headers):
+        if "generativelanguage" in url:
+            return 200, _gemini_answer("Извините, не могу помочь с этим запросом.")
+        return 200, _openai_answer(_GOOD_ANSWER)
+
+    _install_fake_session(monkeypatch, handler)
+    result = await llm_client.generate_text("system", "user")
+
+    assert result is not None and "Groq" in result.provider_label
+    assert any("короткий" in a for a in result.attempts)
+
+
+@pytest.mark.asyncio
+async def test_llm_returns_none_when_all_providers_fail(monkeypatch) -> None:
+    """Тест 52: если не ответил никто, возвращается None (бот уходит на локальный движок)."""
+    from bot.services import llm_client
+
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+    monkeypatch.setenv("LLM_PROVIDER", "groq")
+
+    def handler(url, payload, headers):
+        return 401, "invalid api key"
+
+    _install_fake_session(monkeypatch, handler)
+    assert await llm_client.generate_text("system", "user") is None
+    assert llm_client.LAST_RESULT is None
+    assert any("HTTP 401" in a for a in llm_client.LAST_ATTEMPTS)
+
+
+@pytest.mark.asyncio
+async def test_adaptation_reports_llm_model(monkeypatch, db: Database) -> None:
+    """Тест 53: в отчёте об адаптации видно, какой бесплатной моделью сделана переработка."""
+    from bot.services import llm_client, market_standards
+
+    async def fake_generate(system_prompt, user_prompt, **kwargs):
+        return llm_client.LLMResult(
+            text=_GOOD_ANSWER,
+            provider_label="Groq (free tier)",
+            model="llama-3.3-70b-versatile",
+            attempts=["Groq (free tier): OK"],
+        )
+
+    monkeypatch.setattr(market_standards, "generate_text", fake_generate)
+
+    await db.save_resume(
+        user_id=720,
+        raw_text="Иванов Иван\nРуководитель продукта\nВывел 3 продукта, выручка +38%.\n",
+        extracted_role="Руководитель продукта",
+        extracted_skills=["Product Management", "SQL"],
+    )
+    result = await market_standards.adapt_resume_to_market_standards(db=db, user_id=720)
+
+    assert result["adapted_text"] == _GOOD_ANSWER
+    assert "Бесплатная LLM" in result["engine_used"]
+    assert "llama-3.3-70b-versatile" in result["engine_used"]
+    assert result["docx_bytes"][:2] == b"PK", "должен собраться .docx"
+
+
+@pytest.mark.asyncio
+async def test_llm_command_explains_how_to_connect(monkeypatch) -> None:
+    """Тест 54: команда /llm без ключей объясняет, как подключить бесплатную модель."""
+    from bot.handlers.common import cmd_llm_status
+
+    for name in ("LLM_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "GROQ_API_KEY",
+                 "CEREBRAS_API_KEY", "MISTRAL_API_KEY", "OPENROUTER_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+
+    class FakeMessage:
+        def __init__(self):
+            self.sent = []
+
+        async def answer(self, text, **kwargs):
+            self.sent.append((text, kwargs))
+            return self
+
+    message = FakeMessage()
+    await cmd_llm_status(message)
+
+    text = message.sent[-1][0]
+    assert "LLM не подключена" in text
+    assert "aistudio.google.com/apikey" in text and "console.groq.com/keys" in text
+    assert "GEMINI_API_KEY" in text and "Secrets" in text
+    assert message.sent[-1][1].get("parse_mode") == "Markdown"
