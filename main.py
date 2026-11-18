@@ -53,11 +53,6 @@ async def main() -> None:
     await db.init_db()
     logger.info("База данных SQLite инициализирована: %s", config.db_path)
 
-    # Досеиваем новые источники вакансий (ТГ-каналы/сайты) в существующую базу
-    added_sources = await db.ensure_default_sources()
-    if added_sources:
-        logger.info("Добавлено новых источников вакансий в БД: %d", added_sources)
-
     # Авто-починка профилей, где вместо должности/навыков ранее сохранилось ФИО
     repaired = await repair_invalid_resume_profiles(db)
     if repaired:

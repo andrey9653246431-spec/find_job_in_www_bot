@@ -9,7 +9,7 @@ from aiogram.types import CallbackQuery, Message
 from bot.database import Database
 from bot.keyboards import get_search_period_keyboard
 from bot.services.vacancy_parser import (
-    format_vacancies_search_blocks,
+    format_vacancies_search_message,
     search_vacancies_by_resume,
 )
 
@@ -95,33 +95,25 @@ async def cb_execute_search_by_period(
             user_id=callback.from_user.id,
             period_days=period_days,
         )
-        body, footer = format_vacancies_search_blocks(search_result)
+        formatted_output = format_vacancies_search_message(search_result)
 
-        if len(body) + len(footer) <= 4000:
+        if len(formatted_output) <= 4000:
             await status_msg.edit_text(
-                f"{body}\n{footer}",
+                formatted_output,
                 reply_markup=get_search_period_keyboard(),
                 parse_mode="Markdown",
                 disable_web_page_preview=True,
             )
         else:
-            # Длинный список: отправляем основную часть и отдельно подвал,
-            # чтобы предупреждения и дисклеймер не обрезались.
-            # Обрезаем по границе вакансии, чтобы не рвать карточку посередине
-            cut = body[:3900]
-            boundary = cut.rfind("\n\n**")
-            if boundary > 1000:
-                cut = cut[:boundary]
+            # Если список вакансий длинный, разбиваем на части
             await status_msg.edit_text(
-                cut + "\n…",
+                formatted_output[:3950] + "\n...",
                 parse_mode="Markdown",
                 disable_web_page_preview=True,
             )
             await callback.message.answer(
-                footer.strip()[:4000],
+                "🔄 Выбрать другой период поиска:",
                 reply_markup=get_search_period_keyboard(),
-                parse_mode="Markdown",
-                disable_web_page_preview=True,
             )
     except ValueError as exc:
         await status_msg.edit_text(f"⚠️ {exc}")
