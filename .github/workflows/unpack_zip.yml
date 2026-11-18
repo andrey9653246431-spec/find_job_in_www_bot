@@ -31,21 +31,48 @@ jobs:
           set -e
           ZIP_FILE="find_job_in_www_bot.zip"
 
-          if [ -f "$ZIP_FILE" ]; then
-            echo "📦 Найден архив $ZIP_FILE — распаковываю в корень репозитория..."
-            python3 -m zipfile -e "$ZIP_FILE" .
-            rm -f "$ZIP_FILE"
-            echo "🧹 Архив $ZIP_FILE удалён после распаковки."
-          else
-            echo "ℹ️ Архив $ZIP_FILE отсутствует — работаю с уже распакованными файлами."
+          # Браузеры добавляют к имени метку времени («find_job_in_www_bot 15.42.38.zip»),
+          # поэтому если точного имени нет — берём самый свежий архив по маске.
+          if [ ! -f "$ZIP_FILE" ]; then
+            CANDIDATE="$(ls -t find_job_in_www_bot*.zip 2>/dev/null | head -n 1 || true)"
+            if [ -n "$CANDIDATE" ]; then
+              ZIP_FILE="$CANDIDATE"
+              echo "🔎 Точного имени нет, но найден архив: $ZIP_FILE"
+            fi
           fi
+
+          if [ -f "$ZIP_FILE" ]; then
+            echo "📦 Размер архива: $(wc -c < "$ZIP_FILE") байт — распаковываю в корень репозитория..."
+            python3 -m zipfile -e "$ZIP_FILE" .
+
+            # Если архив собран «папкой» (внутри есть main.py + bot/), поднимаем содержимое в корень
+            for candidate in */; do
+              if [ -f "${candidate}main.py" ] && [ -d "${candidate}bot" ]; then
+                echo "📁 Архив с вложенной папкой (${candidate}) — переношу содержимое в корень"
+                cp -af "${candidate}." .
+                rm -rf "$candidate"
+              fi
+            done
+
+            rm -f find_job_in_www_bot*.zip
+            echo "🧹 Архивы удалены после распаковки."
+          else
+            echo "ℹ️ Архив отсутствует — работаю с уже распакованными файлами."
+          fi
+
+          # Контроль результата: без этих файлов репозиторий нерабочий
+          for required in main.py bot/database.py bot/services/vacancy_parser.py; do
+            if [ ! -f "$required" ]; then
+              echo "::error::После распаковки отсутствует $required"
+              exit 1
+            fi
+          done
+          echo "✅ Ключевые файлы на месте: main.py, bot/database.py, bot/services/vacancy_parser.py"
+          grep -c "remoteok.com\|fuck_the_frameworks" bot/database.py || true
 
           # Убираем служебные артефакты предыдущих версий
           rm -rf .github/workflow .github/unpack_and_setup.py
           rm -f run_bot.yml unpack.yml          # дубликаты workflow-файлов в корне репозитория
-
-          # GITHUB_TOKEN не может пушить изменения в .github/workflows/,
-          # поэтому оставляем в этой папке только действующий workflow
           rm -f .github/workflows/ci.yml
 
       - name: Set up Python 3.12 and run tests (pytest)
