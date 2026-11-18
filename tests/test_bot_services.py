@@ -588,11 +588,13 @@ async def test_repair_legacy_broken_profile(db: Database) -> None:
     )
     await upload_and_register_resume(db=db, user_id=user_id, raw_text=raw_resume)
 
-    # Имитируем старую (сломанную) запись: ФИО и в роли, и в навыках
+    # Имитируем старую (сломанную) запись: ФИО и в роли, и в навыках.
+    # manual=False — это «данные из прошлой версии», а не правка человеком.
     await db.update_resume_profile(
         user_id=user_id,
         role="Кузнецов Дмитрий Сергеевич",
         skills=["Кузнецов", "Дмитрий", "Сергеевич"],
+        manual=False,
     )
 
     role, skills, repaired = repair_profile_values(
@@ -1637,3 +1639,316 @@ async def test_search_excludes_candidates_end_to_end(monkeypatch) -> None:
     assert "РЕКОМЕНДУЕМ КАНДИДАТА НА ПОЗИЦИЮ: CFO" not in titles
     assert result["excluded_count"] == 1
     assert result["total_found"] == 2
+
+
+# =============================================================================
+# Правка профиля резюме кнопками + фильтр постов «Резюме» в Telegram-каналах
+# =============================================================================
+
+def _fsm_context(user_id: int = 700):
+    """Готовый FSMContext на MemoryStorage — как в реальном диспетчере."""
+    from aiogram.fsm.context import FSMContext
+    from aiogram.fsm.storage.base import StorageKey
+    from aiogram.fsm.storage.memory import MemoryStorage
+
+    storage = MemoryStorage()
+    key = StorageKey(bot_id=1, chat_id=user_id, user_id=user_id)
+    return FSMContext(storage=storage, key=key)
+
+
+class _ProfileMessage:
+    """Заглушка aiogram.Message для правки профиля: text + answer + from_user."""
+
+    def __init__(self, text: str, user_id: int = 700) -> None:
+        self.text = text
+        self.sent: list = []
+
+        class _User:
+            id = user_id
+            username = "tester"
+
+        self.from_user = _User()
+
+    async def answer(self, text, **kwargs):
+        self.sent.append((text, kwargs))
+        return self
+
+    async def edit_text(self, text, **kwargs):
+        self.sent.append((text, kwargs))
+        return self
+
+
+class _ProfileCallback:
+    """Заглушка CallbackQuery: data + message + from_user."""
+
+    def __init__(self, data: str, message, user_id: int = 700) -> None:
+        self.data = data
+        self.message = message
+        self.answered = 0
+
+        class _User:
+            id = user_id
+
+        self.from_user = _User()
+
+    async def answer(self, *args, **kwargs):
+        self.answered += 1
+
+
+@pytest.mark.asyncio
+async def test_profile_edit_buttons_are_offered_after_upload() -> None:
+    """Тест 40: сразу после загрузки резюме есть кнопки правки должности и навыков."""
+    from bot.keyboards import get_after_upload_keyboard, get_profile_edit_keyboard
+
+    upload_kb = get_after_upload_keyboard()
+    buttons = {b.callback_data: b.text for row in upload_kb.inline_keyboard for b in row}
+    assert "profile_edit:role" in buttons and "должность" in buttons["profile_edit:role"].lower()
+    assert "profile_edit:skills" in buttons and "навык" in buttons["profile_edit:skills"].lower()
+    assert "quick_action:search" in buttons
+    # кнопки правки стоят выше поиска — их и надо нажимать до поиска
+    flat = [b.callback_data for row in upload_kb.inline_keyboard for b in row]
+    assert flat.index("profile_edit:role") < flat.index("quick_action:search")
+    assert flat.index("profile_edit:skills") < flat.index("quick_action:search")
+
+    edit_kb = get_profile_edit_keyboard()
+    edit_codes = [b.callback_data for row in edit_kb.inline_keyboard for b in row]
+    assert edit_codes == ["profile_edit:role", "profile_edit:skills", "quick_action:search"]
+
+
+@pytest.mark.asyncio
+async def test_edit_role_flow_updates_profile(db: Database) -> None:
+    """Тест 41: кнопка «Изменить должность» → ввод текста → должность сохранена в БД."""
+    from bot.handlers.resume import cb_edit_profile_role, handle_profile_role_input
+
+    await db.save_resume(
+        user_id=700,
+        raw_text="Иванов Иван\nМенеджер\nМосква\n\nНавыки\nExcel, CRM\n",
+        extracted_role="Менеджер",
+        extracted_skills=["Excel", "CRM"],
+    )
+    state = _fsm_context(700)
+    message = _ProfileMessage("", user_id=700)
+    callback = _ProfileCallback("profile_edit:role", message, user_id=700)
+
+    await cb_edit_profile_role(callback, state, db)
+    assert callback.answered == 1
+    assert await state.get_state() == "ResumeStates:waiting_for_role"
+    assert "Изменение целевой должности" in message.sent[-1][0]
+
+    typed = _ProfileMessage("«Руководитель продукта»", user_id=700)
+    await handle_profile_role_input(typed, state, db)
+
+    assert await state.get_state() is None, "после сохранения состояние должно сбрасываться"
+    record = await db.get_resume(700)
+    assert record["extracted_role"] == "Руководитель продукта"
+    assert "Руководитель продукта" in typed.sent[-1][0]
+    assert typed.sent[-1][1].get("reply_markup") is not None
+
+
+@pytest.mark.asyncio
+async def test_edit_skills_flow_parses_and_replaces(db: Database) -> None:
+    """Тест 42: навыки заменяются списком из текста, дубликаты убираются, «очистить» работает."""
+    from bot.handlers.resume import (
+        cb_edit_profile_skills,
+        handle_profile_skills_input,
+        _parse_skills_input,
+    )
+
+    assert _parse_skills_input("P&L, Excel; CRM | 1C") == ["P&L", "Excel", "CRM", "1C"]
+    assert _parse_skills_input("Excel, excel, EXCEL") == ["Excel"]
+
+    await db.save_resume(
+        user_id=701,
+        raw_text="Иванов Иван\nРуководитель продукта\nНавыки\nExcel\n",
+        extracted_role="Руководитель продукта",
+        extracted_skills=["Excel"],
+    )
+    state = _fsm_context(701)
+    message = _ProfileMessage("", user_id=701)
+    callback = _ProfileCallback("profile_edit:skills", message, user_id=701)
+
+    await cb_edit_profile_skills(callback, state, db)
+    assert await state.get_state() == "ResumeStates:waiting_for_skills"
+
+    typed = _ProfileMessage(
+        "Product Management, Unit Economics\nSQL, Product Management", user_id=701
+    )
+    await handle_profile_skills_input(typed, state, db)
+
+    record = await db.get_resume(701)
+    assert record["extracted_skills"] == ["Product Management", "Unit Economics", "SQL"]
+    assert await state.get_state() is None
+
+    # «очистить» освобождает список
+    await cb_edit_profile_skills(_ProfileCallback("profile_edit:skills", message, user_id=701), state, db)
+    await handle_profile_skills_input(_ProfileMessage("очистить", user_id=701), state, db)
+    assert (await db.get_resume(701))["extracted_skills"] == []
+
+
+@pytest.mark.asyncio
+async def test_edit_role_can_be_cancelled(db: Database) -> None:
+    """Тест 43: правку профиля можно отменить — прежние значения остаются."""
+    from bot.handlers.resume import handle_profile_role_input
+
+    await db.save_resume(
+        user_id=702,
+        raw_text="Иванов Иван\nДиректор по маркетингу\n",
+        extracted_role="Директор по маркетингу",
+        extracted_skills=["Excel"],
+    )
+    state = _fsm_context(702)
+    await state.set_state("ResumeStates:waiting_for_role")
+
+    cancelled = _ProfileMessage("/cancel", user_id=702)
+    await handle_profile_role_input(cancelled, state, db)
+
+    assert await state.get_state() is None
+    assert (await db.get_resume(702))["extracted_role"] == "Директор по маркетингу"
+    assert "отменено" in cancelled.sent[-1][0].lower()
+
+    # нажатие кнопки главного меню тоже выходит из режима правки
+    await state.set_state("ResumeStates:waiting_for_role")
+    menu_click = _ProfileMessage("🔍 Поиск вакансий", user_id=702)
+    await handle_profile_role_input(menu_click, state, db)
+    assert await state.get_state() is None
+    assert (await db.get_resume(702))["extracted_role"] == "Директор по маркетингу"
+
+
+def test_resume_posts_excluded_only_in_telegram_channels() -> None:
+    """Тест 44: посты, начинающиеся с «Резюме», отбрасываются в TG-каналах, но не на сайтах."""
+    from bot.services.vacancy_parser import (
+        REASON_CANDIDATE_RECOMMENDATION,
+        REASON_RESUME_POST,
+        vacancy_exclusion_reason,
+    )
+
+    tg_resume = {"title": "Резюме: Иван Иванов, финансовый директор", "snippet": "", "source_type": "tg_channel"}
+    assert vacancy_exclusion_reason(tg_resume) == REASON_RESUME_POST
+
+    emoji_resume = {"title": "📄 РЕЗЮМЕ — директор по продажам", "snippet": "", "source_type": "tg_channel"}
+    assert vacancy_exclusion_reason(emoji_resume) == REASON_RESUME_POST
+
+    cv_post = {"title": "CV: Product manager", "snippet": "", "source_type": "tg_channel"}
+    assert vacancy_exclusion_reason(cv_post) == REASON_RESUME_POST
+
+    # на сайте вакансий «Резюме …» может быть статьёй — не отбрасываем
+    site_resume = {"title": "Резюме: как составить правильно", "snippet": "", "source_type": "website"}
+    assert vacancy_exclusion_reason(site_resume) == ""
+
+    # «Резюме не требуется» — это вакансия
+    no_resume_needed = {"title": "Резюме не требуется — продавец", "snippet": "", "source_type": "tg_channel"}
+    assert vacancy_exclusion_reason(no_resume_needed) == ""
+
+    # обычная вакансия и рекомендация кандидата
+    vacancy = {"title": "Руководитель продукта", "snippet": "", "source_type": "tg_channel"}
+    assert vacancy_exclusion_reason(vacancy) == ""
+    recommendation = {
+        "title": "РЕКОМЕНДУЕМ КАНДИДАТА НА ПОЗИЦИЮ: CFO",
+        "snippet": "",
+        "source_type": "tg_channel",
+    }
+    assert vacancy_exclusion_reason(recommendation) == REASON_CANDIDATE_RECOMMENDATION
+
+
+@pytest.mark.asyncio
+async def test_search_reports_resume_posts_filtered() -> None:
+    """Тест 45: в шапке выдачи видно, сколько постов-резюме отфильтровано и почему."""
+    from bot.services import vacancy_parser
+
+    vacancies = [
+        {"title": "Руководитель продукта", "url": "https://t.me/x/1", "source_title": "TG: x",
+         "source_type": "tg_channel", "published_at": __import__("datetime").datetime.now(
+             __import__("datetime").timezone.utc), "matched_skills": [], "relevance_score": 10,
+         "snippet": ""},
+        {"title": "Резюме: Иван Иванов, CFO", "url": "https://t.me/x/2", "source_title": "TG: x",
+         "source_type": "tg_channel", "published_at": __import__("datetime").datetime.now(
+             __import__("datetime").timezone.utc), "matched_skills": [], "relevance_score": 10,
+         "snippet": ""},
+        {"title": "РЕКОМЕНДУЕМ КАНДИДАТА НА ПОЗИЦИЮ: COO", "url": "https://t.me/x/3",
+         "source_title": "TG: x", "source_type": "tg_channel",
+         "published_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+         "matched_skills": [], "relevance_score": 10, "snippet": ""},
+    ]
+
+    async def fake_parse_single_source(**kwargs):
+        return list(vacancies)
+
+    monkeypatch_target = "_parse_single_source"
+    original = getattr(vacancy_parser, monkeypatch_target)
+    setattr(vacancy_parser, monkeypatch_target, fake_parse_single_source)
+    try:
+        class FakeDB:
+            async def get_resume(self, user_id):
+                return {"extracted_role": "Руководитель продукта", "extracted_skills": []}
+
+            async def list_sources(self, active_only=True):
+                return [{"title": "TG: x", "canonical_url": "https://t.me/x",
+                         "parse_url": "https://t.me/s/x", "source_type": "tg_channel", "is_active": 1}]
+
+        result = await vacancy_parser.search_vacancies_by_resume(db=FakeDB(), user_id=1, period_days=7)
+    finally:
+        setattr(vacancy_parser, monkeypatch_target, original)
+
+    assert result["total_found"] == 1
+    assert result["excluded_count"] == 2
+    assert result["excluded_breakdown"]["пост-резюме кандидата («Резюме …»)"] == 1
+    assert result["excluded_breakdown"]["рекомендация кандидата («Рекомендуем кандидата …»)"] == 1
+
+    body, _footer = vacancy_parser.format_vacancies_search_blocks(result)
+    assert "Отфильтровано постов-резюме" in body
+    assert "Резюме …" in body
+
+
+@pytest.mark.asyncio
+async def test_manual_profile_edit_survives_auto_repair(db: Database) -> None:
+    """Тест 46: ручную правку профиля авто-починка при старте бота не перезаписывает."""
+    from bot.services.file_extractor import repair_invalid_resume_profiles
+
+    # 1. Ручная правка: пользователь сам выбрал короткую должность «Руководитель»
+    await db.save_resume(
+        user_id=710,
+        raw_text="Иванов Иван\nРуководитель продукта\nМосква\n",
+        extracted_role="Руководитель продукта",
+        extracted_skills=["SQL"],
+    )
+    await db.update_resume_profile(user_id=710, role="Руководитель")
+    assert (await db.get_resume(710))["profile_edited_manually"] == 1
+
+    # 2. Профиль из старой версии (без отметки о ручной правке)
+    await db.save_resume(
+        user_id=711,
+        raw_text="Петров Пётр\nРуководитель продукта\nМосква\n",
+        extracted_role="Руководитель",
+        extracted_skills=["SQL"],
+    )
+
+    await repair_invalid_resume_profiles(db)
+
+    assert (await db.get_resume(710))["extracted_role"] == "Руководитель", "ручную правку не трогаем"
+    assert (await db.get_resume(711))["extracted_role"] == "Руководитель продукта", "старый профиль чинится"
+
+
+@pytest.mark.asyncio
+async def test_profile_edit_marks_manual_and_survives_restart_flow(db: Database) -> None:
+    """Тест 47: правка кнопками помечает профиль как ручной и переживает перезапуск бота."""
+    from bot.handlers.resume import handle_profile_role_input, handle_profile_skills_input
+    from bot.services.file_extractor import repair_invalid_resume_profiles
+
+    await db.save_resume(
+        user_id=712,
+        raw_text="Иванов Иван\nМенеджер\nМосква\n",
+        extracted_role="Менеджер",
+        extracted_skills=["Excel"],
+    )
+    state = _fsm_context(712)
+    await state.set_state("ResumeStates:waiting_for_role")
+    await handle_profile_role_input(_ProfileMessage("Директор", user_id=712), state, db)
+    await state.set_state("ResumeStates:waiting_for_skills")
+    await handle_profile_skills_input(_ProfileMessage("Excel, P&L", user_id=712), state, db)
+
+    await repair_invalid_resume_profiles(db)
+
+    record = await db.get_resume(712)
+    assert record["extracted_role"] == "Директор"
+    assert record["extracted_skills"] == ["Excel", "P&L"]
+    assert record["profile_edited_manually"] == 1

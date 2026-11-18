@@ -5,6 +5,9 @@ from aiogram.fsm.state import State, StatesGroup
 class ResumeStates(StatesGroup):
     """Состояние ожидания загрузки резюме (файлом или текстом)."""
     waiting_for_resume = State()
+    # Ручная корректировка профиля перед поиском вакансий
+    waiting_for_role = State()
+    waiting_for_skills = State()
 
 
 class MarketStandardsStates(StatesGroup):

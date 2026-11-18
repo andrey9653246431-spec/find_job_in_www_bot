@@ -1058,6 +1058,18 @@ class Database:
         self.db_path = db_path
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
 
+    @staticmethod
+    async def _ensure_column(db: Any, table: str, column: str, ddl: str) -> None:
+        """Добавляет колонку в существующую таблицу (SQLite не умеет IF NOT EXISTS).
+
+        Нужно для уже работающих баз: бот обновляется поверх старого файла БД,
+        поэтому схему приходится догонять вручную.
+        """
+        async with db.execute(f"PRAGMA table_info({table})") as cursor:
+            columns = {row[1] for row in await cursor.fetchall()}
+        if column not in columns:
+            await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
     async def init_db(self) -> None:
         """Создаёт таблицы и предзаполняет базовые источники, если база пустая."""
         async with aiosqlite.connect(self.db_path) as db:
@@ -1071,9 +1083,14 @@ class Database:
                     extracted_role TEXT,
                     extracted_skills TEXT,
                     file_name TEXT,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    profile_edited_manually INTEGER NOT NULL DEFAULT 0
                 )
                 """
+            )
+            # Базы, созданные до появления ручной правки профиля
+            await self._ensure_column(
+                db, "users_resumes", "profile_edited_manually", "INTEGER NOT NULL DEFAULT 0"
             )
             await db.execute(
                 """
@@ -1248,11 +1265,15 @@ class Database:
         user_id: int,
         role: Optional[str] = None,
         skills: Optional[List[str]] = None,
+        manual: bool = True,
     ) -> Optional[Dict[str, Any]]:
         """Обновляет целевую должность и/или ключевые навыки в профиле резюме.
 
         Нужен, когда автоматическое извлечение не справилось (например, в резюме
         не было ни названия должности, ни блока навыков).
+
+        ``manual=True`` помечает профиль как отредактированный человеком: авто-починка
+        при старте бота такие профили не трогает (иначе она «переисправит» выбор).
         """
         record = await self.get_resume(user_id)
         if not record:
@@ -1263,11 +1284,14 @@ class Database:
 
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
-                "UPDATE users_resumes SET extracted_role = ?, extracted_skills = ?, updated_at = ? WHERE user_id = ?",
+                "UPDATE users_resumes SET extracted_role = ?, extracted_skills = ?, updated_at = ?, "
+                "profile_edited_manually = CASE WHEN ? THEN 1 ELSE profile_edited_manually END "
+                "WHERE user_id = ?",
                 (
                     new_role,
                     json.dumps(new_skills, ensure_ascii=False),
                     datetime.now(timezone.utc).isoformat(),
+                    1 if manual else 0,
                     user_id,
                 ),
             )

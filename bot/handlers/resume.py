@@ -14,6 +14,7 @@ from bot.database import Database
 from bot.keyboards import (
     get_after_upload_keyboard,
     get_main_menu_keyboard,
+    get_profile_edit_keyboard,
 )
 from bot.services.file_extractor import (
     build_resume_profile,
@@ -21,6 +22,7 @@ from bot.services.file_extractor import (
     upload_and_register_resume,
 )
 from bot.services.market_standards import adapt_resume_to_market_standards
+from bot.services.message_utils import escape_markdown
 from bot.states import ResumeStates
 
 router = Router(name="resume")
@@ -34,12 +36,12 @@ def _profile_report(record: dict) -> str:
     skills = record.get("extracted_skills") or []
 
     role_line = (
-        f"🎯 **Целевая должность:** {role}"
+        f"🎯 **Целевая должность:** {escape_markdown(role)}"
         if role
         else "🎯 **Целевая должность:** ⚠️ не распознана в резюме"
     )
     skills_line = (
-        f"🛠 **Ключевые навыки ({len(skills)}):** {', '.join(skills)}"
+        f"🛠 **Ключевые навыки ({len(skills)}):** {escape_markdown(', '.join(skills))}"
         if skills
         else "🛠 **Ключевые навыки:** ⚠️ не найдены в резюме"
     )
@@ -55,7 +57,11 @@ def _profile_report(record: dict) -> str:
         if hints
         else ""
     )
-    return f"{role_line}\n{skills_line}{hint_block}"
+    edit_hint = (
+        "\n✏️ Распознано неточно? Поправьте кнопками **«Изменить должность»** / "
+        "**«Изменить навыки»** — поиск пойдёт уже по исправленному профилю."
+    )
+    return f"{role_line}\n{skills_line}{hint_block}{edit_hint}"
 
 # =============================================================================
 # 1. ОТДЕЛЬНАЯ ФУНКЦИЯ ЗАГРУЗКИ РЕЗЮМЕ
@@ -299,6 +305,214 @@ async def cmd_my_resume(message: Message, db: Database) -> None:
 
 
 # =============================================================================
+# 3.1 ИНТЕРАКТИВНАЯ ПРАВКА ПРОФИЛЯ ПЕРЕД ПОИСКОМ (кнопки «Изменить должность/навыки»)
+# =============================================================================
+
+MENU_BUTTON_TEXTS = {
+    "📤 Загрузить резюме",
+    "✨ Адаптировать резюме",
+    "📐 Стандарты рынка",
+    "🔍 Поиск вакансий",
+    "🌐 Источники вакансий",
+    "📄 Моё резюме",
+    "🏛 Пример идеального резюме",
+    "🧭 Найти каналы и сайты",
+}
+
+CANCEL_TEXTS = {"/cancel", "отмена", "cancel", "стоп"}
+
+
+def _clean_role_input(raw: str) -> str:
+    """Чистит введённую должность: кавычки, маркеры списка, лишние пробелы."""
+    value = " ".join((raw or "").split())
+    value = value.strip(" .,;:•-–—\"'«»`")
+    return value[:120]
+
+
+def _parse_skills_input(raw: str) -> list[str]:
+    """Разбирает навыки из текста: через запятую, точку с запятой, слэш или с новой строки."""
+    items = re.split(r"[,;|/\n]+", raw or "")
+    skills: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        cleaned = " ".join(item.split()).strip(" .•-–—\"'«»`")
+        if not cleaned or len(cleaned) > 40:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        skills.append(cleaned)
+    return skills[:30]
+
+
+async def _ask_role_edit(target: Message, state: FSMContext, record: dict) -> None:
+    """Просит пользователя прислать новое название должности."""
+    await state.set_state(ResumeStates.waiting_for_role)
+    current = (record.get("extracted_role") or "").strip() or "не распознана"
+    await target.answer(
+        "✏️ **Изменение целевой должности**\n\n"
+        f"Сейчас в профиле: **{escape_markdown(current)}**\n\n"
+        "Пришлите новое название одним сообщением, например:\n"
+        "`Руководитель продукта`\n"
+        "`Директор по маркетингу`\n\n"
+        "_Для отмены — /cancel_",
+        parse_mode="Markdown",
+    )
+
+
+async def _ask_skills_edit(target: Message, state: FSMContext, record: dict) -> None:
+    """Просит пользователя прислать новый список навыков."""
+    await state.set_state(ResumeStates.waiting_for_skills)
+    skills = record.get("extracted_skills") or []
+    current = escape_markdown(", ".join(skills)) if skills else "не найдены"
+    await target.answer(
+        "🛠 **Изменение ключевых навыков**\n\n"
+        f"Сейчас в профиле ({len(skills)}): **{current}**\n\n"
+        "Пришлите навыки через запятую — список **заменит** прежний, например:\n"
+        "`P&L, Excel, CRM, 1C, управление командой`\n\n"
+        "Чтобы очистить список — отправьте `очистить`.\n"
+        "_Для отмены — /cancel_",
+        parse_mode="Markdown",
+    )
+
+
+@router.callback_query(F.data == "profile_edit:role")
+async def cb_edit_profile_role(
+    callback: CallbackQuery, state: FSMContext, db: Database
+) -> None:
+    """Кнопка «✏️ Изменить должность»: включает режим ввода новой должности."""
+    await callback.answer()
+    if not callback.message:
+        return
+    record = await db.get_resume(callback.from_user.id)  # type: ignore
+    if not record:
+        await callback.message.answer(  # type: ignore[union-attr]
+            "ℹ️ Сначала загрузите резюме: **📤 Загрузить резюме**.",
+            parse_mode="Markdown",
+        )
+        return
+    await _ask_role_edit(callback.message, state, record)  # type: ignore[arg-type]
+
+
+@router.callback_query(F.data == "profile_edit:skills")
+async def cb_edit_profile_skills(
+    callback: CallbackQuery, state: FSMContext, db: Database
+) -> None:
+    """Кнопка «🛠 Изменить навыки»: включает режим ввода нового списка навыков."""
+    await callback.answer()
+    if not callback.message:
+        return
+    record = await db.get_resume(callback.from_user.id)  # type: ignore
+    if not record:
+        await callback.message.answer(  # type: ignore[union-attr]
+            "ℹ️ Сначала загрузите резюме: **📤 Загрузить резюме**.",
+            parse_mode="Markdown",
+        )
+        return
+    await _ask_skills_edit(callback.message, state, record)  # type: ignore[arg-type]
+
+
+@router.message(ResumeStates.waiting_for_role, F.text)
+async def handle_profile_role_input(
+    message: Message, state: FSMContext, db: Database
+) -> None:
+    """Принимает новую должность и сохраняет её в профиль резюме."""
+    raw = (message.text or "").strip()
+
+    if raw in MENU_BUTTON_TEXTS:
+        await state.clear()
+        await message.answer(
+            "Изменение должности отменено. Повторите нажатие нужной кнопки меню.",
+            reply_markup=get_main_menu_keyboard(),
+        )
+        return
+    if raw.lower() in CANCEL_TEXTS:
+        await state.clear()
+        await message.answer(
+            "Изменение должности отменено — профиль остался прежним.",
+            reply_markup=get_main_menu_keyboard(),
+        )
+        return
+
+    role = _clean_role_input(raw)
+    if len(role) < 2:
+        await message.answer(
+            "⚠️ Не понял должность. Пришлите название одним сообщением, например: "
+            "`Руководитель продукта`",
+            parse_mode="Markdown",
+        )
+        return
+
+    updated = await db.update_resume_profile(user_id=message.from_user.id, role=role)  # type: ignore
+    if updated is None:
+        await state.clear()
+        await message.answer("⚠️ Резюме не найдено — загрузите его заново: **📤 Загрузить резюме**.")
+        return
+
+    await state.clear()
+    await message.answer(
+        "✅ **Целевая должность обновлена!**\n\n"
+        + _profile_report(updated)
+        + "\n\nТеперь можно запускать поиск вакансий.",
+        reply_markup=get_after_upload_keyboard(),
+        parse_mode="Markdown",
+    )
+
+
+@router.message(ResumeStates.waiting_for_skills, F.text)
+async def handle_profile_skills_input(
+    message: Message, state: FSMContext, db: Database
+) -> None:
+    """Принимает новый список навыков и сохраняет его в профиль резюме."""
+    raw = (message.text or "").strip()
+
+    if raw in MENU_BUTTON_TEXTS:
+        await state.clear()
+        await message.answer(
+            "Изменение навыков отменено. Повторите нажатие нужной кнопки меню.",
+            reply_markup=get_main_menu_keyboard(),
+        )
+        return
+    if raw.lower() in CANCEL_TEXTS:
+        await state.clear()
+        await message.answer(
+            "Изменение навыков отменено — профиль остался прежним.",
+            reply_markup=get_main_menu_keyboard(),
+        )
+        return
+
+    if raw.lower() in {"очистить", "нет", "-", "пусто"}:
+        skills: list[str] = []
+    else:
+        skills = _parse_skills_input(raw)
+        if not skills:
+            await message.answer(
+                "⚠️ Не удалось разобрать навыки. Пример: `P&L, Excel, CRM, 1C`",
+                parse_mode="Markdown",
+            )
+            return
+
+    updated = await db.update_resume_profile(
+        user_id=message.from_user.id,  # type: ignore
+        skills=skills,
+    )
+    if updated is None:
+        await state.clear()
+        await message.answer("⚠️ Резюме не найдено — загрузите его заново: **📤 Загрузить резюме**.")
+        return
+
+    await state.clear()
+    await message.answer(
+        "✅ **Ключевые навыки обновлены!**\n\n"
+        + _profile_report(updated)
+        + "\n\nТеперь можно запускать поиск вакансий.",
+        reply_markup=get_after_upload_keyboard(),
+        parse_mode="Markdown",
+    )
+
+
+# =============================================================================
 # 4. РУЧНАЯ КОРРЕКТИРОВКА ПРОФИЛЯ РЕЗЮМЕ (/set_role, /set_skills)
 # =============================================================================
 
@@ -383,6 +597,7 @@ async def cmd_reset_profile(message: Message, db: Database) -> None:
         user_id=message.from_user.id,  # type: ignore
         role=profile["role"],
         skills=profile["skills"],
+        manual=False,
     )
     await message.answer(
         "🔄 **Профиль пересобран автоматически.**\n\n"

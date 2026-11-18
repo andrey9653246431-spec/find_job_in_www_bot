@@ -128,10 +128,52 @@ def get_sources_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def get_profile_edit_keyboard(with_search: bool = True) -> InlineKeyboardMarkup:
+    """Кнопки ручной корректировки профиля резюме перед поиском вакансий."""
+    rows = [
+        [
+            InlineKeyboardButton(
+                text="✏️ Изменить должность",
+                callback_data="profile_edit:role",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text="🛠 Изменить навыки",
+                callback_data="profile_edit:skills",
+            ),
+        ],
+    ]
+    if with_search:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="🔍 Искать вакансии (1 день / 1 нед / 1 мес)",
+                    callback_data="quick_action:search",
+                )
+            ]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def get_after_upload_keyboard() -> InlineKeyboardMarkup:
-    """Быстрые действия сразу после загрузки резюме."""
+    """Быстрые действия сразу после загрузки резюме.
+
+    Первым делом — правка должности и навыков: их распознаёт парсер, и ошибку
+    лучше исправить до поиска вакансий, а не после.
+    """
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✏️ Изменить должность",
+                    callback_data="profile_edit:role",
+                ),
+                InlineKeyboardButton(
+                    text="🛠 Изменить навыки",
+                    callback_data="profile_edit:skills",
+                ),
+            ],
             [
                 InlineKeyboardButton(
                     text="✨ Адаптировать под стандарты рынка",

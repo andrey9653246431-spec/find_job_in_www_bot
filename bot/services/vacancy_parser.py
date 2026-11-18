@@ -129,12 +129,42 @@ def _normalize_for_filter(text: str) -> str:
     return re.sub(r"\s+", " ", normalized).strip()
 
 
+# Посты-резюме в Telegram-каналах: «Резюме: Иван Иванов, Финансовый директор …»
+RESUME_POST_PREFIXES = ("резюме", "resume", "cv:", "cv.", "cv,", "cv ", "cv/", "cv-")
+
+REASON_CANDIDATE_RECOMMENDATION = "рекомендация кандидата («Рекомендуем кандидата …»)"
+REASON_RESUME_POST = "пост-резюме кандидата («Резюме …»)"
+
+
+def vacancy_exclusion_reason(vacancy: Dict[str, Any]) -> str:
+    """Причина, по которой объявление не является вакансией (пустая строка — оставляем).
+
+    - «Рекомендуем кандидата …» — рекомендация резюме (любой источник).
+    - «Резюме …» / «CV …» — пост-резюме кандидата; отсекаем только в Telegram-каналах,
+      где такие посты публикуют рекрутеры (на сайтах вакансий это может быть статья).
+    """
+    title = _normalize_for_filter(vacancy.get("title") or "")
+    snippet = _normalize_for_filter(vacancy.get("snippet") or "")
+
+    if title.startswith(EXCLUDED_TITLE_PREFIXES) or snippet.startswith(EXCLUDED_TITLE_PREFIXES):
+        return REASON_CANDIDATE_RECOMMENDATION
+
+    # «Резюме не требуется», «резюме не нужно» — это вакансия, а не пост-резюме
+    if title.startswith(("резюме не", "резюме: не", "resume not")):
+        return ""
+
+    if vacancy.get("source_type") == "tg_channel" and title.startswith(RESUME_POST_PREFIXES):
+        return REASON_RESUME_POST
+
+    if title == "cv":
+        return REASON_RESUME_POST if vacancy.get("source_type") == "tg_channel" else ""
+
+    return ""
+
+
 def is_excluded_vacancy(vacancy: Dict[str, Any]) -> bool:
-    """Отсекает объявления, которые начинаются с «Рекомендуем кандидата …» (это резюме, не вакансия)."""
-    for field in ("title", "snippet"):
-        if _normalize_for_filter(vacancy.get(field) or "").startswith(EXCLUDED_TITLE_PREFIXES):
-            return True
-    return False
+    """Отсекает посты, которые не являются вакансиями: «Рекомендуем кандидата …» и «Резюме …»."""
+    return bool(vacancy_exclusion_reason(vacancy))
 
 
 def _pick_title_and_snippet(raw_text: str) -> tuple[str, str]:
@@ -839,7 +869,7 @@ async def search_vacancies_by_resume(
 
     all_vacancies: List[Dict[str, Any]] = []
     seen_links = set()
-    excluded_count = 0
+    excluded_breakdown: Dict[str, int] = {}
 
     for res in nested_results:
         if isinstance(res, list):
@@ -847,9 +877,10 @@ async def search_vacancies_by_resume(
                 url = vac.get("url", "")
                 if not url or url in seen_links:
                     continue
-                # «Рекомендуем кандидата …» — это рекомендация резюме, а не вакансия
-                if is_excluded_vacancy(vac):
-                    excluded_count += 1
+                # «Рекомендуем кандидата …» / «Резюме …» — это резюме кандидата, а не вакансия
+                reason = vacancy_exclusion_reason(vac)
+                if reason:
+                    excluded_breakdown[reason] = excluded_breakdown.get(reason, 0) + 1
                     continue
                 seen_links.add(url)
                 all_vacancies.append(vac)
@@ -872,8 +903,9 @@ async def search_vacancies_by_resume(
         "all_vacancies": all_vacancies,
         "page_size": page_size,
         "vacancies": all_vacancies[:page_size],
-        "excluded_count": excluded_count,
-        "excluded_reason": "объявления «Рекомендуем кандидата …» — это резюме, а не вакансия",
+        "excluded_count": sum(excluded_breakdown.values()),
+        "excluded_breakdown": excluded_breakdown,
+        "excluded_reason": "посты-резюме кандидатов — это не вакансии",
         "source_issues": source_issues,
         "manual_sources": manual_sources,
     }
@@ -966,12 +998,21 @@ def format_vacancies_search_blocks(
         page_note = " (показаны все)" if vacancies else ""
 
     excluded_count = int(search_result.get("excluded_count") or 0)
-    excluded_note = (
-        f"🚫 **Отфильтровано:** {excluded_count} — объявления «Рекомендуем кандидата …» "
-        "(это резюме, а не вакансия)\n"
-        if excluded_count
-        else ""
-    )
+    excluded_note = ""
+    if excluded_count:
+        breakdown = search_result.get("excluded_breakdown") or {}
+        if breakdown:
+            details = ", ".join(
+                f"{count} — {escape_markdown(reason)}" for reason, count in breakdown.items()
+            )
+            excluded_note = (
+                f"🚫 **Отфильтровано постов-резюме:** {excluded_count} ({details})\n"
+            )
+        else:
+            excluded_note = (
+                f"🚫 **Отфильтровано постов-резюме:** {excluded_count} "
+                "(«Рекомендуем кандидата …», «Резюме …»)\n"
+            )
 
     header = (
         f"🔍 **Результаты поиска вакансий за {period_label}**\n"

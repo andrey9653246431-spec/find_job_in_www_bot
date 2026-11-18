@@ -679,6 +679,11 @@ async def repair_invalid_resume_profiles(db: Database) -> int:
         return 0
 
     for record in resumes:
+        # Профиль, который человек поправил кнопками «Изменить должность/навыки»,
+        # автоматика не перезаписывает — иначе правка «слетит» после рестарта.
+        if record.get("profile_edited_manually"):
+            continue
+
         role = record.get("extracted_role") or ""
         skills = record.get("extracted_skills") or []
         new_role, new_skills, was_repaired = repair_profile_values(
