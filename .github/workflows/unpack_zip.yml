@@ -1,33 +1,17 @@
-name: Unpack ZIP Archive to Repository
+name: Unpack ZIP Archive & Run Tests (CI)
 
 on:
   push:
     branches: [ "main", "master" ]
-    paths:
-      - "find_job_in_www_bot.zip"
-      - "*.zip"
-      - ".github/workflows/unpack_zip.yml"
+  pull_request:
+    branches: [ "main", "master" ]
   workflow_dispatch:
-    inputs:
-      zip_filename:
-        description: "Имя ZIP-архива в корне репозитория"
-        required: false
-        default: "find_job_in_www_bot.zip"
-        type: string
-      remove_zip:
-        description: "Удалить ZIP-архив после распаковки"
-        required: false
-        default: "true"
-        type: choice
-        options:
-          - "true"
-          - "false"
 
 permissions:
   contents: write
 
 jobs:
-  unpack-zip:
+  unpack-and-test:
     runs-on: ubuntu-latest
 
     steps:
@@ -36,27 +20,29 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Unpack ZIP archive into repository root
+      - name: Unpack ZIP archive into repository root (if present)
         shell: bash
         run: |
           set -e
-          ZIP_FILE="${{ inputs.zip_filename || 'find_job_in_www_bot.zip' }}"
+          ZIP_FILE="find_job_in_www_bot.zip"
 
-          if [ ! -f "$ZIP_FILE" ]; then
-            echo "ℹ️ Архив $ZIP_FILE не найден в корне репозитория (возможно, уже распакован)."
-            exit 0
-          fi
-
-          echo "📦 Распаковываю $ZIP_FILE в корень репозитория..."
-          python3 -m zipfile -e "$ZIP_FILE" .
-
-          REMOVE_ZIP="${{ inputs.remove_zip || 'true' }}"
-          if [ "$REMOVE_ZIP" = "true" ]; then
+          if [ -f "$ZIP_FILE" ]; then
+            echo "📦 Найден архив $ZIP_FILE — распаковываю в корень репозитория..."
+            python3 -m zipfile -e "$ZIP_FILE" .
             rm -f "$ZIP_FILE"
-            echo "🧹 Архив $ZIP_FILE удалён после успешной распаковки."
+            echo "🧹 Архив $ZIP_FILE удалён после распаковки."
+          else
+            echo "ℹ️ Архив $ZIP_FILE уже распакован."
           fi
 
-      - name: Verify project tests (pytest)
+          # Очищаем случайно созданную папку .github/workflow (без s) и временный скрипт
+          rm -rf .github/workflow .github/unpack_and_setup.py
+
+          # Важно: стандартный GITHUB_TOKEN не разрешает пушить новые файлы внутрь .github/workflows/,
+          # поэтому оставляем в .github/workflows/ только текущий workflow
+          rm -f .github/workflows/ci.yml
+
+      - name: Set up Python 3.12 and run tests (pytest)
         run: |
           if [ -f "requirements.txt" ]; then
             python3 -m pip install --upgrade pip
@@ -64,15 +50,20 @@ jobs:
             pytest -v
           fi
 
-      - name: Commit and push unpacked files to branch
+      - name: Commit and push unpacked files to main branch
+        if: github.event_name != 'pull_request'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
+          # Исключаем изменения внутри .github/workflows/, чтобы GITHUB_TOKEN прошёл без ограничений
+          git reset HEAD .github/workflows/ || true
+          git checkout -- .github/workflows/ || true
+
           if git diff --cached --quiet; then
-            echo "ℹ️ Нет новых файлов для коммита."
+            echo "ℹ️ Все файлы в репозитории уже распакованы и актуальны."
           else
-            git commit -m "feat(actions): auto-unpack $ZIP_FILE into repository"
+            git commit -m "feat(actions): auto-unpack project files into repository"
             git push origin "HEAD:${GITHUB_REF_NAME}"
-            echo "🚀 Все файлы из архива распакованы и сохранены в ветку ${GITHUB_REF_NAME}!"
+            echo "🚀 Все файлы успешно распакованы и сохранены в ветку ${GITHUB_REF_NAME}!"
           fi
