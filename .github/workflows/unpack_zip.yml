@@ -10,6 +10,11 @@ on:
 permissions:
   contents: write
 
+# Сериализуем запуски: два одновременных прогона не будут «перегонять» друг друга
+concurrency:
+  group: unpack-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   unpack-and-test:
     runs-on: ubuntu-latest
@@ -32,14 +37,15 @@ jobs:
             rm -f "$ZIP_FILE"
             echo "🧹 Архив $ZIP_FILE удалён после распаковки."
           else
-            echo "ℹ️ Архив $ZIP_FILE уже распакован."
+            echo "ℹ️ Архив $ZIP_FILE отсутствует — работаю с уже распакованными файлами."
           fi
 
-          # Очищаем случайно созданную папку .github/workflow (без s) и временный скрипт
+          # Убираем служебные артефакты предыдущих версий
           rm -rf .github/workflow .github/unpack_and_setup.py
+          rm -f run_bot.yml unpack.yml          # дубликаты workflow-файлов в корне репозитория
 
-          # Важно: стандартный GITHUB_TOKEN не разрешает пушить новые файлы внутрь .github/workflows/,
-          # поэтому оставляем в .github/workflows/ только текущий workflow
+          # GITHUB_TOKEN не может пушить изменения в .github/workflows/,
+          # поэтому оставляем в этой папке только действующий workflow
           rm -f .github/workflows/ci.yml
 
       - name: Set up Python 3.12 and run tests (pytest)
@@ -52,18 +58,53 @@ jobs:
 
       - name: Commit and push unpacked files to main branch
         if: github.event_name != 'pull_request'
+        shell: bash
         run: |
+          set -uo pipefail
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          # Исключаем изменения внутри .github/workflows/, чтобы GITHUB_TOKEN прошёл без ограничений
-          git reset HEAD .github/workflows/ || true
-          git checkout -- .github/workflows/ || true
+
+          BRANCH="${GITHUB_REF_NAME:-main}"
+
+          stage_changes() {
+            git add -A
+            # Исключаем .github/workflows/: у GITHUB_TOKEN нет на это права (workflows scope)
+            git reset -q HEAD .github/workflows/ || true
+            git checkout -- .github/workflows/ 2>/dev/null || true
+          }
+
+          stage_changes
 
           if git diff --cached --quiet; then
-            echo "ℹ️ Все файлы в репозитории уже распакованы и актуальны."
-          else
-            git commit -m "feat(actions): auto-unpack project files into repository"
-            git push origin "HEAD:${GITHUB_REF_NAME}"
-            echo "🚀 Все файлы успешно распакованы и сохранены в ветку ${GITHUB_REF_NAME}!"
+            echo "ℹ️ Изменений нет: репозиторий уже содержит актуальные файлы. Push не требуется."
+            exit 0
           fi
+
+          git commit -m "feat(actions): auto-unpack project files into repository"
+
+          for attempt in 1 2 3; do
+            echo "🔁 Попытка push #${attempt} в ветку ${BRANCH}..."
+            if git push origin "HEAD:${BRANCH}"; then
+              echo "🚀 Файлы успешно распакованы и сохранены в ветку ${BRANCH}!"
+              exit 0
+            fi
+
+            echo "⚠️ Push отклонён (ветка ушла вперёд — параллельный прогон). Синхронизируюсь..."
+            git fetch origin "${BRANCH}"
+            git reset --mixed "origin/${BRANCH}"   # рабочее дерево сохраняется
+            stage_changes
+
+            if git diff --cached --quiet; then
+              echo "✅ Содержимое ветки уже идентично архиву — досылать нечего."
+              exit 0
+            fi
+
+            git commit -m "feat(actions): auto-unpack project files into repository (retry ${attempt})"
+            sleep $((attempt * 3))
+          done
+
+          echo "::error::Не удалось запушить изменения после 3 попыток."
+          git status
+          git log --oneline -5
+          exit 1
