@@ -109,6 +109,34 @@ _EMOJI_ONLY_RE = re.compile(
 )
 
 
+# Объявления-рекомендации кандидатов (резюме), а не вакансии.
+# Пример: канал «Вакансии от CRC» (@vacancyCRC) публикует посты
+# «РЕКОМЕНДУЕМ КАНДИДАТА НА ПОЗИЦИЮ: Финансовый директор / CFO …» — это не вакансия.
+EXCLUDED_TITLE_PREFIXES = (
+    "рекомендуем кандидат",
+    "рекомендуем кандидатов",
+    "рекомендую кандидат",
+    "рекомендуем специалист",
+    "рекомендуем сотрудник",
+    "рекомендую специалист",
+)
+
+
+def _normalize_for_filter(text: str) -> str:
+    """Приводит заголовок/сниппет к виду для сравнения: без эмодзи, регистра и лишних пробелов."""
+    normalized = (text or "").strip().lower().replace("ё", "е")
+    normalized = re.sub(r"^[^0-9a-zа-я]+", "", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def is_excluded_vacancy(vacancy: Dict[str, Any]) -> bool:
+    """Отсекает объявления, которые начинаются с «Рекомендуем кандидата …» (это резюме, не вакансия)."""
+    for field in ("title", "snippet"):
+        if _normalize_for_filter(vacancy.get(field) or "").startswith(EXCLUDED_TITLE_PREFIXES):
+            return True
+    return False
+
+
 def _pick_title_and_snippet(raw_text: str) -> tuple[str, str]:
     """Выбирает осмысленный заголовок и сниппет поста.
 
@@ -811,14 +839,20 @@ async def search_vacancies_by_resume(
 
     all_vacancies: List[Dict[str, Any]] = []
     seen_links = set()
+    excluded_count = 0
 
     for res in nested_results:
         if isinstance(res, list):
             for vac in res:
                 url = vac.get("url", "")
-                if url and url not in seen_links:
-                    seen_links.add(url)
-                    all_vacancies.append(vac)
+                if not url or url in seen_links:
+                    continue
+                # «Рекомендуем кандидата …» — это рекомендация резюме, а не вакансия
+                if is_excluded_vacancy(vac):
+                    excluded_count += 1
+                    continue
+                seen_links.add(url)
+                all_vacancies.append(vac)
 
     # Сортируем по релевантности резюме и свежести даты публикации
     all_vacancies.sort(
@@ -826,6 +860,7 @@ async def search_vacancies_by_resume(
         reverse=True,
     )
 
+    page_size = config.max_vacancies_per_message
     return {
         "period_days": period_days,
         "period_label": PERIOD_LABELS.get(period_days, f"{period_days} дн."),
@@ -833,7 +868,12 @@ async def search_vacancies_by_resume(
         "skills": skills,
         "sources_checked": len(sources),
         "total_found": len(all_vacancies),
-        "vacancies": all_vacancies[: config.max_vacancies_per_message],
+        # полный список хранится в результате: листать «Показать ещё» можно без повторного парсинга
+        "all_vacancies": all_vacancies,
+        "page_size": page_size,
+        "vacancies": all_vacancies[:page_size],
+        "excluded_count": excluded_count,
+        "excluded_reason": "объявления «Рекомендуем кандидата …» — это резюме, а не вакансия",
         "source_issues": source_issues,
         "manual_sources": manual_sources,
     }
@@ -885,8 +925,15 @@ def _format_manual_boards(
     return "\n".join(lines) + "\n"
 
 
-def format_vacancies_search_blocks(search_result: Dict[str, Any]) -> Tuple[str, str]:
+def format_vacancies_search_blocks(
+    search_result: Dict[str, Any],
+    offset: int = 0,
+    limit: Optional[int] = None,
+) -> Tuple[str, str]:
     """Формирует сообщение поиска вакансий как два блока: (основная часть, подвал).
+
+    ``offset``/``limit`` задают «страницу» выдачи: нумерация вакансий сквозная,
+    поэтому по кнопке «Показать ещё» список продолжается, а не начинается заново.
 
     Подвал (предупреждения об источниках, международные борды и обязательный
     дисклеймер) выносится отдельно, чтобы при разбиении длинного списка на части
@@ -896,19 +943,43 @@ def format_vacancies_search_blocks(search_result: Dict[str, Any]) -> Tuple[str, 
     role = search_result["role"]
     skills = search_result["skills"]
     sources_checked = search_result["sources_checked"]
-    vacancies = search_result["vacancies"]
     total_found = search_result["total_found"]
     manual_sources = search_result.get("manual_sources") or []
 
+    all_items: List[Dict[str, Any]] = (
+        search_result.get("all_vacancies") or search_result.get("vacancies") or []
+    )
+    page_size = limit if limit is not None else int(
+        search_result.get("page_size") or config.max_vacancies_per_message
+    )
+    offset = max(0, min(offset, len(all_items)))
+    vacancies = all_items[offset: offset + page_size] if page_size > 0 else all_items[offset:]
+    shown_from = offset + 1 if vacancies else 0
+    shown_to = offset + len(vacancies)
+
     skills_preview = ", ".join(skills[:8]) if skills else "по профилю резюме"
     manual_note = f" (в т.ч. ручной поиск: {len(manual_sources)})" if manual_sources else ""
+
+    if vacancies and total_found > len(vacancies):
+        page_note = f" (показаны {shown_from}–{shown_to} из {len(all_items)})"
+    else:
+        page_note = " (показаны все)" if vacancies else ""
+
+    excluded_count = int(search_result.get("excluded_count") or 0)
+    excluded_note = (
+        f"🚫 **Отфильтровано:** {excluded_count} — объявления «Рекомендуем кандидата …» "
+        "(это резюме, а не вакансия)\n"
+        if excluded_count
+        else ""
+    )
 
     header = (
         f"🔍 **Результаты поиска вакансий за {period_label}**\n"
         f"👤 **Профиль резюме:** {escape_markdown(role) if role else 'не указана (задайте `/set_role`)'}\n"
         f"🛠 **Ключевые навыки:** {escape_markdown(skills_preview)}\n"
         f"📡 **Проверено источников в БД:** {sources_checked}{manual_note}\n"
-        f"📊 **Найдено подходящих вакансий:** {total_found}\n"
+        f"📊 **Найдено подходящих вакансий:** {total_found}{page_note}\n"
+        f"{excluded_note}"
         "━━━━━━━━━━━━━━━━━━━━\n"
     )
 
@@ -918,7 +989,11 @@ def format_vacancies_search_blocks(search_result: Dict[str, Any]) -> Tuple[str, 
         role=role,
         period_days=search_result.get("period_days", 7),
     )
-    footer = issues_block + boards_block + f"\n_{LINKS_DISCLAIMER}_"
+    is_last_page = offset + len(vacancies) >= len(all_items)
+    if offset == 0 or is_last_page:
+        footer = issues_block + boards_block + f"\n_{LINKS_DISCLAIMER}_"
+    else:
+        footer = ""
 
     if not vacancies:
         body = (
@@ -930,7 +1005,7 @@ def format_vacancies_search_blocks(search_result: Dict[str, Any]) -> Tuple[str, 
         return body, footer
 
     items_blocks: List[str] = []
-    for idx, vac in enumerate(vacancies, start=1):
+    for idx, vac in enumerate(vacancies, start=shown_from or 1):
         pub_dt: datetime = vac["published_at"]
         date_str = pub_dt.strftime("%d.%m.%Y %H:%M UTC")
         matched = ", ".join(vac.get("matched_skills") or []) or "профиль должности"
@@ -949,7 +1024,9 @@ def format_vacancies_search_blocks(search_result: Dict[str, Any]) -> Tuple[str, 
     return header + "\n\n".join(items_blocks), footer
 
 
-def format_vacancies_search_message(search_result: Dict[str, Any]) -> str:
+def format_vacancies_search_message(
+    search_result: Dict[str, Any], offset: int = 0, limit: Optional[int] = None
+) -> str:
     """Единое сообщение со списком вакансий (основная часть + подвал с дисклеймером)."""
-    body, footer = format_vacancies_search_blocks(search_result)
-    return f"{body}\n{footer}"
+    body, footer = format_vacancies_search_blocks(search_result, offset=offset, limit=limit)
+    return f"{body}\n{footer}".strip()

@@ -1227,6 +1227,8 @@ async def test_long_search_result_is_sent_in_safe_chunks() -> None:
             "skills": ["маркетинг"],
             "sources_checked": 100,
             "total_found": len(vacancies),
+            "all_vacancies": vacancies,
+            "page_size": len(vacancies),
             "vacancies": vacancies,
             "source_issues": [],
             "manual_sources": [],
@@ -1428,3 +1430,210 @@ async def test_hh_api_block_is_reported_not_silent() -> None:
     assert result == []
     assert len(issues) == 1
     assert "403" in issues[0]["reason"]
+
+
+# =============================================================================
+# Фильтр «Рекомендуем кандидата …» и листание выдачи (больше 10 вакансий)
+# =============================================================================
+
+def _fake_vacancy(idx: int, title: str = None, source: str = "TG: Вакансии от CRC (@vacancyCRC)") -> dict:
+    from datetime import datetime, timezone
+
+    return {
+        "title": title or f"Руководитель продукта {idx}",
+        "url": f"https://t.me/vacancyCRC/{idx}",
+        "source_title": source,
+        "source_type": "tg_channel",
+        "published_at": datetime.now(timezone.utc),
+        "matched_skills": ["Product Management"],
+        "relevance_score": 50,
+        "snippet": "описание вакансии",
+    }
+
+
+def test_recommend_candidate_posts_are_excluded() -> None:
+    """Тест 34: объявления «Рекомендуем кандидата …» считаются резюме и в вакансии не попадают."""
+    from bot.services.vacancy_parser import is_excluded_vacancy
+
+    excluded_titles = [
+        "РЕКОМЕНДУЕМ КАНДИДАТА НА ПОЗИЦИЮ:",
+        "Рекомендуем кандидата на позиции: Финансовый директор / CFO",
+        "🔥 рекомендуем кандидатов на вакансию",
+        "Рекомендуем специалиста: Операционный директор",
+    ]
+    for title in excluded_titles:
+        vacancy = _fake_vacancy(1, title=title)
+        assert is_excluded_vacancy(vacancy), title
+
+    # обычные вакансии с этим словом внутри не отбрасываются
+    for title in (
+        "Руководитель продукта в рекомендательном сервисе",
+        "Директор по маркетингу (рекомендуем к отклику)",  # фраза не в начале
+        "Product Owner",
+    ):
+        assert not is_excluded_vacancy(_fake_vacancy(2, title=title)), title
+
+
+def test_search_page_shows_more_than_ten_with_continuous_numbering() -> None:
+    """Тест 35: по кнопке «Показать ещё» видны вакансии 11–20, нумерация сквозная."""
+    from bot.services.vacancy_parser import format_vacancies_search_blocks
+
+    vacancies = [_fake_vacancy(i) for i in range(1, 26)]
+    result = {
+        "period_days": 7,
+        "period_label": "1 неделя",
+        "role": "Руководитель продукта",
+        "skills": ["Product Management"],
+        "sources_checked": 163,
+        "total_found": len(vacancies),
+        "all_vacancies": vacancies,
+        "page_size": 10,
+        "vacancies": vacancies[:10],
+        "excluded_count": 13,
+        "source_issues": [],
+        "manual_sources": [],
+    }
+
+    first_body, first_footer = format_vacancies_search_blocks(result, offset=0, limit=10)
+    assert "показаны 1–10 из 25" in first_body
+    assert "**1. Руководитель продукта 1**" in first_body
+    assert "**11. Руководитель продукта 11**" not in first_body
+    assert "Отфильтровано" in first_body and "13" in first_body
+    assert "Рекомендуем кандидата" in first_body
+    assert first_footer, "на первой странице должен быть подвал с предупреждениями и дисклеймером"
+
+    second_body, second_footer = format_vacancies_search_blocks(result, offset=10, limit=10)
+    assert "показаны 11–20 из 25" in second_body
+    assert "**11. Руководитель продукта 11**" in second_body
+    assert "**20. Руководитель продукта 20**" in second_body
+    assert second_footer == "", "подвал не дублируется на средней странице"
+
+    last_body, last_footer = format_vacancies_search_blocks(result, offset=20, limit=10)
+    assert "**21. Руководитель продукта 21**" in last_body
+    assert "**25. Руководитель продукта 25**" in last_body
+    assert last_footer, "на последней странице подвал (дисклеймер) возвращается"
+
+
+def test_search_results_keyboard_offers_next_pages() -> None:
+    """Тест 36: клавиатура выдачи предлагает «ещё 10» и «показать все», а в конце исчезает."""
+    from bot.keyboards import get_search_results_keyboard
+
+    keyboard = get_search_results_keyboard(shown=10, total=371, page_size=10)
+    assert keyboard is not None
+    buttons = [b for row in keyboard.inline_keyboard for b in row]
+    texts = [b.text for b in buttons]
+    assert any("Показать ещё 10" in t for t in texts)
+    assert any("Показать все (361)" in t for t in texts)
+    assert [b.callback_data for b in buttons] == ["search_more:10", "search_all:10"]
+
+    tail = get_search_results_keyboard(shown=365, total=371, page_size=10)
+    assert tail is not None
+    assert "Показать ещё 6" in tail.inline_keyboard[0][0].text
+
+    assert get_search_results_keyboard(shown=371, total=371, page_size=10) is None
+
+
+def test_search_sessions_cache_lets_users_browse_without_new_parsing() -> None:
+    """Тест 37: результат поиска кэшируется, страницы листаются без повторного парсинга."""
+    from bot.services.search_sessions import (
+        clear_search_result,
+        get_search_result,
+        store_search_result,
+        total_items,
+    )
+
+    result = {"all_vacancies": [_fake_vacancy(i) for i in range(1, 16)], "total_found": 15}
+    store_search_result(4242, result)
+    assert get_search_result(4242) is result
+    assert total_items(result) == 15
+
+    clear_search_result(4242)
+    assert get_search_result(4242) is None
+
+
+@pytest.mark.asyncio
+async def test_render_search_page_sends_all_pages_with_keyboard() -> None:
+    """Тест 38: экран выдачи листается — каждая страница уходит с кнопками, последняя без них."""
+    from bot.handlers.search import _render_search_page
+    from bot.services.search_sessions import store_search_result
+
+    class FakeMessage:
+        def __init__(self) -> None:
+            self.sent: list = []
+
+        async def edit_text(self, text, **kwargs):
+            self.sent.append(("edit", text, kwargs))
+            return self
+
+        async def answer(self, text, **kwargs):
+            self.sent.append(("answer", text, kwargs))
+            return self
+
+    vacancies = [_fake_vacancy(i) for i in range(1, 26)]
+    result = {
+        "period_days": 7,
+        "period_label": "1 неделя",
+        "role": "Руководитель продукта",
+        "skills": ["Product Management"],
+        "sources_checked": 163,
+        "total_found": 25,
+        "all_vacancies": vacancies,
+        "page_size": 10,
+        "vacancies": vacancies[:10],
+        "source_issues": [],
+        "manual_sources": [],
+    }
+    store_search_result(5151, result)
+
+    message = FakeMessage()
+    await _render_search_page(message=message, result=result, offset=10)
+
+    assert message.sent, "страница должна быть отправлена"
+    last_kind, last_text, last_kwargs = message.sent[-1]
+    assert "**11. Руководитель продукта 11**" in last_text
+    assert last_kwargs.get("reply_markup") is not None, "на странице 11–20 кнопки ещё нужны"
+
+    final_message = FakeMessage()
+    await _render_search_page(message=final_message, result=result, offset=20)
+    assert "**25. Руководитель продукта 25**" in final_message.sent[-1][1]
+    assert final_message.sent[-1][2].get("reply_markup") is None, "после последней страницы кнопок нет"
+
+
+@pytest.mark.asyncio
+async def test_search_excludes_candidates_end_to_end(monkeypatch) -> None:
+    """Тест 39: фильтр «Рекомендуем кандидата» работает на уровне всего поиска."""
+    from bot.services import vacancy_parser
+
+    vacancies = [
+        _fake_vacancy(1),
+        _fake_vacancy(2, title="РЕКОМЕНДУЕМ КАНДИДАТА НА ПОЗИЦИЮ: CFO"),
+        _fake_vacancy(3),
+    ]
+
+    async def fake_parse_single_source(**kwargs):
+        return list(vacancies)
+
+    monkeypatch.setattr(vacancy_parser, "_parse_single_source", fake_parse_single_source)
+
+    class FakeDB:
+        async def get_resume(self, user_id):
+            return {"extracted_role": "Руководитель продукта", "extracted_skills": ["SQL"]}
+
+        async def list_sources(self, active_only=True):
+            return [
+                {
+                    "title": "TG: Вакансии от CRC (@vacancyCRC)",
+                    "canonical_url": "https://t.me/vacancyCRC",
+                    "parse_url": "https://t.me/s/vacancyCRC",
+                    "source_type": "tg_channel",
+                    "is_active": 1,
+                }
+            ]
+
+    result = await vacancy_parser.search_vacancies_by_resume(
+        db=FakeDB(), user_id=1, period_days=7
+    )
+    titles = [v["title"] for v in result["all_vacancies"]]
+    assert "РЕКОМЕНДУЕМ КАНДИДАТА НА ПОЗИЦИЮ: CFO" not in titles
+    assert result["excluded_count"] == 1
+    assert result["total_found"] == 2

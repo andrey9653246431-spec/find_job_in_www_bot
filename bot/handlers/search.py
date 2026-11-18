@@ -3,19 +3,72 @@
 - 1 неделя (7 дней)
 - 1 месяц (30 дней)
 """
+from typing import Optional
+
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 from bot.database import Database
-from bot.handlers.messaging import safe_answer, safe_edit_text, send_long_message
-from bot.keyboards import get_search_period_keyboard
-from bot.services.message_utils import split_message
+from bot.config import config
+from bot.handlers.messaging import safe_answer, safe_edit_text
+from bot.keyboards import get_search_period_keyboard, get_search_results_keyboard
+from bot.services.message_utils import MAX_MESSAGE_LENGTH, split_message
+from bot.services.search_sessions import get_search_result, store_search_result, total_items
 from bot.services.vacancy_parser import (
     format_vacancies_search_blocks,
     search_vacancies_by_resume,
 )
 
 router = Router(name="search")
+
+# «Показать все» отдаёт остаток пачками не более этого числа вакансий:
+# защита от 20+ сообщений подряд в чате.
+MAX_BULK_PAGE = 200
+
+
+async def _render_search_page(
+    message: Message,
+    result: dict,
+    offset: int,
+    limit: Optional[int] = None,
+    first_message: Optional[Message] = None,
+) -> None:
+    """Показывает страницу выдачи (offset/limit) с кнопками листания.
+
+    Если передан ``first_message``, первая часть пишется в него (edit),
+    иначе все части отправляются новыми сообщениями.
+    """
+    total = total_items(result)
+    page_size = int(result.get("page_size") or config.max_vacancies_per_message)
+    limit = page_size if limit is None else max(1, limit)
+    offset = max(0, min(offset, total))
+
+    body, footer = format_vacancies_search_blocks(result, offset=offset, limit=limit)
+    combined = f"{body}\n{footer}".strip()
+    shown = min(offset + limit, total)
+
+    keyboard = get_search_results_keyboard(shown=shown, total=total, page_size=page_size)
+    chunks = split_message(combined, limit=MAX_MESSAGE_LENGTH) or [combined]
+
+    for index, chunk in enumerate(chunks, start=1):
+        is_last = index == len(chunks)
+        reply_markup = keyboard if is_last else None
+        if index == 1 and first_message is not None:
+            await safe_edit_text(
+                chunk,
+                first_message,
+                reply_markup=reply_markup,
+                parse_mode="Markdown",
+                disable_web_page_preview=True,
+            )
+        else:
+            await safe_answer(
+                chunk,
+                message,
+                reply_markup=reply_markup,
+                parse_mode="Markdown",
+                disable_web_page_preview=True,
+            )
 
 
 async def _prompt_search_period(message: Message, user_id: int, db: Database) -> None:
@@ -97,40 +150,90 @@ async def cb_execute_search_by_period(
             user_id=callback.from_user.id,
             period_days=period_days,
         )
-        body, footer = format_vacancies_search_blocks(search_result)
+        # Кладём полный список в память: «Показать ещё» не запускает парсинг заново
+        store_search_result(callback.from_user.id, search_result)
 
-        keyboard = get_search_period_keyboard()
-
-        if len(body) + len(footer) <= 3900:
-            await safe_edit_text(
-                f"{body}\n{footer}",
-                status_msg,
-                reply_markup=keyboard,
-                parse_mode="Markdown",
-                disable_web_page_preview=True,
-            )
-        else:
-            # Длинный список: режем ТОЛЬКО по границам строк (split_message),
-            # иначе Telegram отвечает «can't find end of the entity» на обрезанном
-            # посередине `**жирном**` или `[ссылке](url)`.
-            await send_long_message(
-                body,
-                status_msg,
-                parse_mode="Markdown",
-                disable_web_page_preview=True,
-            )
-            # Подвал (предупреждения + ручные площадки + дисклеймер) — отдельными
-            # сообщениями с клавиатурой на последнем, чтобы дисклеймер не потерялся.
-            footer_chunks = split_message(footer.strip(), limit=3900) or [""]
-            for index, chunk in enumerate(footer_chunks, start=1):
-                await safe_answer(
-                    chunk,
-                    status_msg,
-                    parse_mode="Markdown",
-                    disable_web_page_preview=True,
-                    reply_markup=keyboard if index == len(footer_chunks) else None,
-                )
+        # Длинный список режется ТОЛЬКО по границам строк (split_message),
+        # иначе Telegram отвечает «can't find end of the entity» на обрезанном
+        # посередине `**жирном**` или `[ссылке](url)`.
+        await _render_search_page(
+            message=status_msg,
+            result=search_result,
+            offset=0,
+            first_message=status_msg,
+        )
     except ValueError as exc:
         await status_msg.edit_text(f"⚠️ {exc}")
     except Exception as exc:
         await status_msg.edit_text(f"❌ Ошибка при поиске вакансий: {exc}")
+
+
+@router.callback_query(F.data.startswith("search_more:"))
+async def cb_show_more_vacancies(callback: CallbackQuery) -> None:
+    """Показывает следующие 10 вакансий из уже найденного списка (без нового парсинга)."""
+    if not callback.message:
+        await callback.answer()
+        return
+    await callback.answer()
+
+    result = get_search_result(callback.from_user.id)
+    if not result:
+        await safe_answer(
+            "⚠️ **Результаты поиска устарели.**\n"
+            "Запустите поиск заново: /search → выберите период.",
+            callback.message,  # type: ignore[arg-type]
+            parse_mode="Markdown",
+        )
+        return
+
+    try:
+        offset = int((callback.data or "search_more:0").split(":", 1)[1])
+    except (ValueError, IndexError):
+        offset = 0
+
+    total = total_items(result)
+    if offset >= total:
+        await callback.answer("Больше вакансий нет", show_alert=False)
+        return
+
+    await _render_search_page(
+        message=callback.message,  # type: ignore[arg-type]
+        result=result,
+        offset=offset,
+    )
+
+
+@router.callback_query(F.data.startswith("search_all:"))
+async def cb_show_all_vacancies(callback: CallbackQuery) -> None:
+    """Показывает сразу весь остаток выдачи (не более MAX_BULK_PAGE вакансий за нажатие)."""
+    if not callback.message:
+        await callback.answer()
+        return
+    await callback.answer()
+
+    result = get_search_result(callback.from_user.id)
+    if not result:
+        await safe_answer(
+            "⚠️ **Результаты поиска устарели.**\n"
+            "Запустите поиск заново: /search → выберите период.",
+            callback.message,  # type: ignore[arg-type]
+            parse_mode="Markdown",
+        )
+        return
+
+    try:
+        offset = int((callback.data or "search_all:0").split(":", 1)[1])
+    except (ValueError, IndexError):
+        offset = 0
+
+    total = total_items(result)
+    if offset >= total:
+        await callback.answer("Больше вакансий нет", show_alert=False)
+        return
+
+    await _render_search_page(
+        message=callback.message,  # type: ignore[arg-type]
+        result=result,
+        offset=offset,
+        limit=min(total - offset, MAX_BULK_PAGE),
+    )

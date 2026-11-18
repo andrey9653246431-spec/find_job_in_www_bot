@@ -1,4 +1,6 @@
 """Клавиатуры (Reply и Inline) для Telegram-бота."""
+from typing import Optional
+
 from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -182,3 +184,39 @@ def get_resource_search_keyboard() -> InlineKeyboardMarkup:
             ],
         ]
     )
+
+
+def get_search_results_keyboard(shown: int, total: int, page_size: int = 10) -> Optional[InlineKeyboardMarkup]:
+    """Кнопки листания выдачи: «Показать ещё» и «Показать все», если вакансий больше страницы.
+
+    ``shown`` — сколько вакансий пользователь уже видел (смещение следующей страницы).
+    Возвращает None, когда показывать больше нечего.
+    """
+    remaining = max(0, total - shown)
+    if remaining <= 0:
+        return None
+
+    rows = []
+    if remaining > page_size:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"📄 Показать ещё {page_size}",
+                    callback_data=f"search_more:{shown}",
+                ),
+                InlineKeyboardButton(
+                    text=f"⏬ Показать все ({remaining})",
+                    callback_data=f"search_all:{shown}",
+                ),
+            ]
+        )
+    else:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"📄 Показать ещё {remaining}",
+                    callback_data=f"search_more:{shown}",
+                )
+            ]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
