@@ -1,0 +1,10 @@
+services:
+  find-job-in-www-bot:
+    build: .
+    container_name: find_job_in_www_bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+

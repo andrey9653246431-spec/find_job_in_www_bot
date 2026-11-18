@@ -1,0 +1,136 @@
+"""Клавиатуры (Reply и Inline) для Telegram-бота."""
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+)
+
+
+def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
+    """Главное меню бота с отдельными кнопками под каждую функцию ТЗ."""
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text="📤 Загрузить резюме"),
+                KeyboardButton(text="✨ Адаптировать резюме"),
+            ],
+            [
+                KeyboardButton(text="📐 Стандарты рынка"),
+                KeyboardButton(text="🔍 Поиск вакансий"),
+            ],
+            [
+                KeyboardButton(text="🌐 Источники вакансий"),
+                KeyboardButton(text="📄 Моё резюме"),
+            ],
+        ],
+        resize_keyboard=True,
+        input_field_placeholder="Выберите действие в меню...",
+    )
+
+
+def get_search_period_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура выбора периода поиска вакансий: 1 день, 1 неделя, 1 месяц."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🕐 За 1 день", callback_data="search_period:1"
+                ),
+                InlineKeyboardButton(
+                    text="📅 За 1 неделю", callback_data="search_period:7"
+                ),
+                InlineKeyboardButton(
+                    text="🗓 За 1 месяц", callback_data="search_period:30"
+                ),
+            ]
+        ]
+    )
+
+
+def get_standards_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура отдельной функции настройки стандартов рынка внутри бота."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🌐 Универсальный ATS (STAR/XYZ)",
+                    callback_data="std_preset:universal_ats",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="💻 IT / Разработка ПО",
+                    callback_data="std_preset:it_dev",
+                ),
+                InlineKeyboardButton(
+                    text="📊 Data / Аналитика",
+                    callback_data="std_preset:data_analytics",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📈 Маркетинг и Продажи",
+                    callback_data="std_preset:marketing_sales",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="✏️ Задать свои стандарты рынка текстом",
+                    callback_data="std_action:custom_input",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔄 Сбросить к базовым стандартам",
+                    callback_data="std_action:reset",
+                )
+            ],
+        ]
+    )
+
+
+def get_sources_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура управления базой источников (ТГ-каналы и сайты вакансий)."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="➕ Добавить сайт или ТГ-канал",
+                    callback_data="src_action:add",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📋 Показать все источники в БД",
+                    callback_data="src_action:list",
+                )
+            ],
+        ]
+    )
+
+
+def get_after_upload_keyboard() -> InlineKeyboardMarkup:
+    """Быстрые действия сразу после загрузки резюме."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✨ Адаптировать под стандарты рынка",
+                    callback_data="quick_action:adapt",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📐 Настроить стандарты рынка",
+                    callback_data="quick_action:standards",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔍 Искать вакансии (1 день / 1 нед / 1 мес)",
+                    callback_data="quick_action:search",
+                )
+            ],
+        ]
+    )
