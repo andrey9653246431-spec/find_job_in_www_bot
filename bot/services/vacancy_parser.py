@@ -22,6 +22,15 @@ from bot.config import config
 from bot.database import Database
 from bot.services.message_utils import escape_markdown
 from bot.services.resource_catalog import LINKS_DISCLAIMER
+from bot.services.source_scopes import (
+    SCOPE_ALL,
+    count_sources_by_scope,
+    filter_sources_by_scope,
+    normalize_scope,
+    scope_hint,
+    scope_label,
+)
+from bot.services.vacancy_dedup import deduplicate_vacancies, describe_dedupe
 
 PERIOD_LABELS: Dict[int, str] = {
     1: "1 день",
@@ -310,6 +319,138 @@ def parse_rss_or_xml_feed(
                 "snippet": desc_clean[:220] or title,
             }
         )
+
+    return results
+
+
+_CAREER_LINK_RE = re.compile(
+    r"(vacanc|vakan|/job|jobs/|/career/.+|/rabota/|position|opening)", re.IGNORECASE
+)
+_CAREER_TITLE_HINT_RE = re.compile(
+    r"(директор|менеджер|руководител|специалист|разработчик|аналитик|инженер|"
+    r"консультант|эксперт|архитектор|администратор|продавец|кассир|водитель|"
+    r"manager|director|engineer|developer|analyst|specialist|officer|lead|head)",
+    re.IGNORECASE,
+)
+_CAREER_NAV_TEXTS = {
+    "вакансии",
+    "все вакансии",
+    "все направления",
+    "направления",
+    "карьера",
+    "еще",
+    "ещё",
+    "показать еще",
+    "показать всё",
+    "подробнее",
+    "все",
+    "смотреть все",
+    "о компании",
+    "стажировки",
+    "стажировка",
+    "студентам",
+    "контакты",
+    "войти",
+    "откликнуться",
+    "на главную",
+    "карьера в компании",
+}
+
+
+def parse_career_page_html(
+    html: str,
+    source: Dict[str, Any],
+    role: str,
+    skills: List[str],
+    cutoff_dt: datetime,
+) -> List[Dict[str, Any]]:
+    """Парсит карьерную страницу компании (career./job./rabota., разделы /vacancies).
+
+    Порядок разбора:
+    1. JSON-LD ``JobPosting`` — самый точный источник (есть у части работодателей);
+    2. ссылки, похожие на вакансии: href с /vacancy, /job, /career/… либо текст,
+       совпадающий с названием должности.
+
+    Страницы, которые отдают вакансии только через JavaScript (Сбер, Т-Банк и др.),
+    вернут пустой список — это ожидаемо, бот сообщит об этом как о непрочитанном
+    источнике.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    base = source.get("canonical_url") or source.get("parse_url") or ""
+    results: List[Dict[str, Any]] = []
+    seen_urls: set = set()
+    now_utc = datetime.now(timezone.utc)
+
+    def _append(title: str, url: str, published_at: datetime, description: str) -> None:
+        if not title or not url or url in seen_urls:
+            return
+        combined = f"{title}\n{description}"
+        match_info = calculate_resume_match(combined, role, skills)
+        if match_info["score"] <= 0:
+            return
+        seen_urls.add(url)
+        results.append(
+            {
+                "title": title[:110],
+                "url": url,
+                "source_title": source.get("title", base),
+                "source_type": "career",
+                "published_at": published_at,
+                "matched_skills": match_info["matched_skills"],
+                "relevance_score": match_info["score"],
+                "snippet": (description or title)[:220],
+            }
+        )
+
+    # 1. JSON-LD JobPosting
+    for tag in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        raw = tag.string or tag.get_text() or ""
+        if "JobPosting" not in raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            continue
+        items = data if isinstance(data, list) else data.get("@graph") or [data]
+        for item in items:
+            if not isinstance(item, dict) or "JobPosting" not in str(item.get("@type", "")):
+                continue
+            title = str(item.get("title") or "").strip()
+            url = str(item.get("url") or base).strip()
+            published_at = (
+                parse_iso_or_rfc_date(str(item.get("datePosted") or "")) or now_utc
+            )
+            if published_at < cutoff_dt:
+                continue
+            description = BeautifulSoup(
+                str(item.get("description") or ""), "html.parser"
+            ).get_text(" ", strip=True)
+            _append(title, urljoin(base, url), published_at, description)
+
+    # 2. Ссылки-вакансии
+    for a_tag in soup.find_all("a", href=True):
+        text = " ".join(a_tag.get_text(" ", strip=True).split())
+        href = str(a_tag.get("href")).strip()
+        if not href or not (5 <= len(text) <= 120) or len(text.split()) > 12:
+            continue
+        if text.lower().strip(" .·•→>") in _CAREER_NAV_TEXTS:
+            continue
+        if not (_CAREER_LINK_RE.search(href) or _CAREER_TITLE_HINT_RE.search(text)):
+            continue
+
+        card = a_tag.find_parent(["article", "li", "div"]) or a_tag
+        time_tag = card.find("time") if card else None
+        published_at = (
+            parse_iso_or_rfc_date(str(time_tag.get("datetime", "")))
+            if time_tag and time_tag.get("datetime")
+            else now_utc
+        ) or now_utc
+        if published_at < cutoff_dt:
+            continue
+
+        full_url = urljoin(base, href).split("#", 1)[0]
+        description = " ".join(card.get_text(" ", strip=True).split())[:300] if card else ""
+        _append(text, full_url, published_at, description)
 
     return results
 
@@ -794,6 +935,15 @@ async def _parse_single_source(
                 cutoff_dt=cutoff_dt,
             )
 
+        if source_type == "career":
+            return parse_career_page_html(
+                html=body,
+                source=source,
+                role=role,
+                skills=skills,
+                cutoff_dt=cutoff_dt,
+            )
+
         return parse_generic_website_html(
             html=body,
             source=source,
@@ -810,14 +960,21 @@ async def search_vacancies_by_resume(
     db: Database,
     user_id: int,
     period_days: int = 7,
+    scope: str = SCOPE_ALL,
 ) -> Dict[str, Any]:
     """Основная функция парсинга и поиска вакансий по резюме за заданный период.
 
     Параметры:
-    - period_days: 1 (1 день), 7 (1 неделя), 30 (1 месяц).
+    - period_days: 1 (1 день), 7 (1 неделя), 30 (1 месяц);
+    - scope: где искать — ``all`` (везде), ``telegram`` (только ТГ-каналы),
+      ``web`` (сайты и агрегаторы), ``career`` (карьерные страницы компаний).
+
+    В выдачу попадают только уникальные вакансии: дубли (одна вакансия в разных
+    каналах/на разных сайтах) схлопываются в один вариант.
     """
     if period_days not in (1, 7, 30):
         period_days = 7
+    scope = normalize_scope(scope)
 
     resume = await db.get_resume(user_id)
     if not resume:
@@ -836,7 +993,17 @@ async def search_vacancies_by_resume(
             "• `/set_skills P&L, Excel, CRM, 1C`\n"
             "или пересоберите профиль командой `/reset_profile`."
         )
-    sources = await db.list_sources(active_only=True)
+    all_sources = await db.list_sources(active_only=True)
+    sources = filter_sources_by_scope(all_sources, scope)
+    scope_counts = count_sources_by_scope(all_sources)
+
+    if not sources:
+        raise ValueError(
+            f"Нет активных источников для области «{scope_label(scope)}».\n"
+            f"{scope_hint(scope)}\n\n"
+            "Добавьте источники в разделе «🌐 Источники вакансий» "
+            "или выберите другую область поиска."
+        )
 
     now_utc = datetime.now(timezone.utc)
     cutoff_dt = now_utc - timedelta(days=period_days)
@@ -885,11 +1052,16 @@ async def search_vacancies_by_resume(
                 seen_links.add(url)
                 all_vacancies.append(vac)
 
+    # Дубли: одна и та же вакансия в разных каналах/на разных сайтах.
+    # В выдачу идёт только один вариант из каждой группы дублей.
+    unique_vacancies, duplicates_removed = deduplicate_vacancies(all_vacancies)
+
     # Сортируем по релевантности резюме и свежести даты публикации
-    all_vacancies.sort(
+    unique_vacancies.sort(
         key=lambda v: (v.get("relevance_score", 0), v.get("published_at", cutoff_dt)),
         reverse=True,
     )
+    all_vacancies = unique_vacancies
 
     page_size = config.max_vacancies_per_message
     return {
@@ -897,8 +1069,12 @@ async def search_vacancies_by_resume(
         "period_label": PERIOD_LABELS.get(period_days, f"{period_days} дн."),
         "role": role,
         "skills": skills,
+        "scope": scope,
+        "scope_label": scope_label(scope),
+        "scope_counts": scope_counts,
         "sources_checked": len(sources),
         "total_found": len(all_vacancies),
+        "duplicates_removed": duplicates_removed,
         # полный список хранится в результате: листать «Показать ещё» можно без повторного парсинга
         "all_vacancies": all_vacancies,
         "page_size": page_size,
@@ -1014,12 +1190,22 @@ def format_vacancies_search_blocks(
                 "(«Рекомендуем кандидата …», «Резюме …»)\n"
             )
 
+    scope_label_text = escape_markdown(
+        search_result.get("scope_label") or scope_label(SCOPE_ALL)
+    )
+    duplicates_note = ""
+    duplicates_removed = int(search_result.get("duplicates_removed") or 0)
+    if duplicates_removed:
+        duplicates_note = describe_dedupe(duplicates_removed) + "\n"
+
     header = (
         f"🔍 **Результаты поиска вакансий за {period_label}**\n"
+        f"🎛 **Область поиска:** {scope_label_text}\n"
         f"👤 **Профиль резюме:** {escape_markdown(role) if role else 'не указана (задайте `/set_role`)'}\n"
         f"🛠 **Ключевые навыки:** {escape_markdown(skills_preview)}\n"
         f"📡 **Проверено источников в БД:** {sources_checked}{manual_note}\n"
-        f"📊 **Найдено подходящих вакансий:** {total_found}{page_note}\n"
+        f"📊 **Найдено уникальных вакансий:** {total_found}{page_note}\n"
+        f"{duplicates_note}"
         f"{excluded_note}"
         "━━━━━━━━━━━━━━━━━━━━\n"
     )
@@ -1040,8 +1226,10 @@ def format_vacancies_search_blocks(
         body = (
             header
             + "\nℹ️ За выбранный период подходящих вакансий по вашим ключевым словам не обнаружено.\n"
-            "💡 Попробуйте выбрать больший период (например, **1 неделю** или **1 месяц**) "
-            "или добавьте новые профильные Telegram-каналы и сайты в раздел «🌐 Источники вакансий»."
+            "💡 Попробуйте выбрать больший период (например, **1 неделю** или **1 месяц**), "
+            "другую область поиска (📡 **Только Telegram** / 🌐 **Только сайты** / "
+            "🏢 **Только карьерные страницы**) или добавьте новые источники "
+            "в раздел «🌐 Источники вакансий»."
         )
         return body, footer
 
@@ -1050,7 +1238,8 @@ def format_vacancies_search_blocks(
         pub_dt: datetime = vac["published_at"]
         date_str = pub_dt.strftime("%d.%m.%Y %H:%M UTC")
         matched = ", ".join(vac.get("matched_skills") or []) or "профиль должности"
-        icon = "📢" if vac.get("source_type") == "tg_channel" else "🌐"
+        vac_source_type = vac.get("source_type")
+        icon = "📢" if vac_source_type == "tg_channel" else ("🏢" if vac_source_type == "career" else "🌐")
 
         block = (
             f"**{idx}. {escape_markdown(vac['title'])}**\n"

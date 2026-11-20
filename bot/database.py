@@ -952,6 +952,44 @@ DEFAULT_SOURCES: List[Dict[str, str]] = [
         "source_type": "website",
         "title": "Сайт: Remote Job (remote-job.ru)",
     },
+    # Карьерные страницы компаний (source_type="career"): вакансии самих работодателей.
+    # Отдают вакансии в HTML — их читает parse_career_page_html (JSON-LD + ссылки).
+    {
+        "canonical_url": "https://team.vk.company/vacancy/",
+        "parse_url": "https://team.vk.company/vacancy/",
+        "source_type": "career",
+        "title": "Карьера: VK (team.vk.company)",
+    },
+    {
+        "canonical_url": "https://career.avito.com/vacancies",
+        "parse_url": "https://career.avito.com/vacancies",
+        "source_type": "career",
+        "title": "Карьера: Avito (career.avito.com)",
+    },
+    {
+        "canonical_url": "https://job.2gis.ru/vacancies",
+        "parse_url": "https://job.2gis.ru/vacancies",
+        "source_type": "career",
+        "title": "Карьера: 2ГИС (job.2gis.ru)",
+    },
+    {
+        "canonical_url": "https://job.mts.ru/vacancies",
+        "parse_url": "https://job.mts.ru/vacancies",
+        "source_type": "career",
+        "title": "Карьера: МТС (job.mts.ru)",
+    },
+    {
+        "canonical_url": "https://yandex.ru/jobs/vacancies",
+        "parse_url": "https://yandex.ru/jobs/vacancies",
+        "source_type": "career",
+        "title": "Карьера: Яндекс (yandex.ru/jobs)",
+    },
+    {
+        "canonical_url": "https://x5.ru/career/",
+        "parse_url": "https://x5.ru/career/",
+        "source_type": "career",
+        "title": "Карьера: X5 Group (x5.ru/career)",
+    },
     # Ручной поиск: 423/439 (антибот), SPA без вакансий в HTML или закрытая выдача.
     {
         "canonical_url": "https://getmatch.ru/vacancies",

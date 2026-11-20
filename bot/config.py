@@ -26,9 +26,36 @@ class Config:
     llm_provider: str = os.getenv("LLM_PROVIDER", "")
     llm_order: str = os.getenv("LLM_ORDER", "")
 
+    # Показывать ли в меню блок «идеальное резюме» (Золотой стандарт + пример Executive CV).
+    # По умолчанию СКРЫТ: пункты не отображаются в меню и команды /gold_standard,
+    # /example_cv отвечают коротким уведомлением. Включить обратно: SHOW_IDEAL_RESUME_UI=1.
+    show_ideal_resume_ui: bool = os.getenv("SHOW_IDEAL_RESUME_UI", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
     # Таймаут HTTP-запросов при парсинге (сек)
     http_timeout: int = int(os.getenv("HTTP_TIMEOUT", "15"))
     max_vacancies_per_message: int = int(os.getenv("MAX_VACANCIES_PER_MESSAGE", "10"))
 
 
 config = Config()
+
+
+def ideal_resume_ui_enabled() -> bool:
+    """Включён ли блок «идеальное резюме» (кнопки меню + команды /gold_standard, /example_cv).
+
+    Читает переменную окружения при каждом вызове, поэтому флаг можно менять
+    без перезапуска кода (в тестах и при отладке это удобно).
+    """
+    return os.getenv("SHOW_IDEAL_RESUME_UI", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+IDEAL_RESUME_DISABLED_TEXT = (
+    "🙈 **Этот раздел скрыт.**\n\n"
+    "Блок «идеальное резюме» (Золотой стандарт и эталонный пример Executive CV) отключён в меню.\n\n"
+    "Доступные действия: **📤 Загрузить резюме**, **✨ Адаптировать резюме**, "
+    "**📐 Стандарты рынка**, **🔍 Поиск вакансий**."
+)

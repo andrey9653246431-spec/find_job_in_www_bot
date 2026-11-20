@@ -8,68 +8,133 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
+from bot.config import ideal_resume_ui_enabled
+
 
 def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
-    """Главное меню бота с отдельными кнопками под каждую функцию ТЗ."""
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [
-                KeyboardButton(text="📤 Загрузить резюме"),
-                KeyboardButton(text="✨ Адаптировать резюме"),
-            ],
-            [
-                KeyboardButton(text="📐 Стандарты рынка"),
-                KeyboardButton(text="🔍 Поиск вакансий"),
-            ],
-            [
-                KeyboardButton(text="🌐 Источники вакансий"),
-                KeyboardButton(text="📄 Моё резюме"),
-            ],
-            [
-                KeyboardButton(text="🏛 Пример идеального резюме"),
-                KeyboardButton(text="🧭 Найти каналы и сайты"),
-            ],
+    """Главное меню бота с отдельными кнопками под каждую функцию ТЗ.
+
+    Пункты про «идеальное резюме» (Золотой стандарт, пример Executive CV)
+    скрыты по умолчанию; вернуть их можно переменной ``SHOW_IDEAL_RESUME_UI=1``.
+    """
+    rows = [
+        [
+            KeyboardButton(text="📤 Загрузить резюме"),
+            KeyboardButton(text="✨ Адаптировать резюме"),
         ],
+        [
+            KeyboardButton(text="📐 Стандарты рынка"),
+            KeyboardButton(text="🔍 Поиск вакансий"),
+        ],
+        [
+            KeyboardButton(text="🌐 Источники вакансий"),
+            KeyboardButton(text="📄 Моё резюме"),
+        ],
+    ]
+    last_row = [KeyboardButton(text="🧭 Найти каналы и сайты")]
+    if ideal_resume_ui_enabled():
+        last_row.insert(0, KeyboardButton(text="🏛 Пример идеального резюме"))
+    rows.append(last_row)
+
+    return ReplyKeyboardMarkup(
+        keyboard=rows,
         resize_keyboard=True,
         input_field_placeholder="Выберите действие в меню...",
     )
 
 
-def get_search_period_keyboard() -> InlineKeyboardMarkup:
-    """Клавиатура выбора периода поиска вакансий: 1 день, 1 неделя, 1 месяц."""
+def get_search_scope_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура выбора области поиска: где именно искать вакансии.
+
+    Область запоминается в callback-данных и передаётся дальше — в клавиатуру выбора периода.
+    """
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="🕐 За 1 день", callback_data="search_period:1"
+                    text="🌍 Везде (ТГ + сайты + карьерные страницы)",
+                    callback_data="search_scope:all",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📡 Только Telegram-каналы",
+                    callback_data="search_scope:telegram",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🌐 Только сайты и агрегаторы",
+                    callback_data="search_scope:web",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🏢 Только карьерные страницы компаний",
+                    callback_data="search_scope:career",
+                )
+            ],
+        ]
+    )
+
+
+def get_search_period_keyboard(scope: str = "all") -> InlineKeyboardMarkup:
+    """Клавиатура выбора периода поиска вакансий: 1 день, 1 неделя, 1 месяц.
+
+    Область поиска (``scope``) кодируется в callback-данных, чтобы не теряться
+    между шагами: ``search_period:7:telegram``.
+    """
+    scope = scope or "all"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🕐 За 1 день", callback_data=f"search_period:1:{scope}"
                 ),
                 InlineKeyboardButton(
-                    text="📅 За 1 неделю", callback_data="search_period:7"
+                    text="📅 За 1 неделю", callback_data=f"search_period:7:{scope}"
                 ),
                 InlineKeyboardButton(
-                    text="🗓 За 1 месяц", callback_data="search_period:30"
+                    text="🗓 За 1 месяц", callback_data=f"search_period:30:{scope}"
                 ),
-            ]
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🎛 Изменить область поиска",
+                    callback_data="search_scope_menu",
+                )
+            ],
         ]
     )
 
 
 def get_standards_keyboard() -> InlineKeyboardMarkup:
-    """Клавиатура отдельной функции настройки стандартов рынка внутри бота."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+    """Клавиатура отдельной функции настройки стандартов рынка внутри бота.
+
+    Кнопки «Золотой стандарт», «Показать пример идеального резюме» и
+    «Вернуть Золотой стандарт» показываются только при ``SHOW_IDEAL_RESUME_UI=1``.
+    """
+    show_ideal = ideal_resume_ui_enabled()
+    rows = []
+    if show_ideal:
+        rows.append(
             [
                 InlineKeyboardButton(
                     text="🏛 Золотой стандарт: Executive CV (2026+)",
                     callback_data="std_preset:executive_cv_2026",
                 )
-            ],
+            ]
+        )
+        rows.append(
             [
                 InlineKeyboardButton(
                     text="👁 Показать пример идеального резюме",
                     callback_data="std_action:example",
                 )
-            ],
+            ]
+        )
+    rows.extend(
+        [
             [
                 InlineKeyboardButton(
                     text="🌐 Универсальный ATS (STAR/XYZ)",
@@ -98,14 +163,18 @@ def get_standards_keyboard() -> InlineKeyboardMarkup:
                     callback_data="std_action:custom_input",
                 )
             ],
+        ]
+    )
+    if show_ideal:
+        rows.append(
             [
                 InlineKeyboardButton(
                     text="🔄 Вернуть Золотой стандарт (2026+)",
                     callback_data="std_action:reset",
                 )
-            ],
-        ]
-    )
+            ]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def get_sources_keyboard() -> InlineKeyboardMarkup:

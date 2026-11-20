@@ -887,7 +887,8 @@ async def test_tgstat_channels_added(db: Database) -> None:
 
     # Всего источников: 9 базовых + 13 + 9 международных + 22 из TGStat
     # + 24 из второй подборки + 70 каналов и 16 сайтов третьей подборки
-    assert len(DEFAULT_SOURCES) == 163
+    # + 6 карьерных страниц компаний (source_type="career")
+    assert len(DEFAULT_SOURCES) == 169
     # Повторный досев ничего не дублирует
     assert await db.ensure_default_sources() == 0
 
@@ -1010,14 +1011,17 @@ async def test_second_batch_channels_added(db: Database) -> None:
 
 
 def test_sources_total_and_uniqueness() -> None:
-    """Тест 20: 163 источника, все уникальны; 135 каналов и 28 сайтов."""
+    """Тест 20: 169 источников, все уникальны; 135 каналов, 28 сайтов, 6 карьерных страниц."""
     from bot.database import DEFAULT_SOURCES
     from bot.services.resource_catalog import TELEGRAM_CHANNELS
 
     tg = [s for s in DEFAULT_SOURCES if s["source_type"] == "tg_channel"]
-    sites = [s for s in DEFAULT_SOURCES if s["source_type"] != "tg_channel"]
-    assert (len(tg), len(sites), len(DEFAULT_SOURCES)) == (135, 28, 163)
-    assert len({s["canonical_url"] for s in DEFAULT_SOURCES}) == 163
+    career = [s for s in DEFAULT_SOURCES if s["source_type"] == "career"]
+    sites = [
+        s for s in DEFAULT_SOURCES if s["source_type"] not in ("tg_channel", "career")
+    ]
+    assert (len(tg), len(sites), len(career), len(DEFAULT_SOURCES)) == (135, 28, 6, 169)
+    assert len({s["canonical_url"] for s in DEFAULT_SOURCES}) == 169
     assert len({c["username"] for c in TELEGRAM_CHANNELS}) == len(TELEGRAM_CHANNELS)
 
 
@@ -2367,3 +2371,387 @@ async def test_adapted_resume_has_no_ai_markup(monkeypatch, db: Database) -> Non
     assert "##" not in docx_text and "**" not in docx_text and "—" not in docx_text
     assert "ЦЕЛЬ" in docx_text and "ОПЫТ РАБОТЫ" in docx_text
     assert has_markdown_artifacts(docx_text) is False
+
+
+# =============================================================================
+# Скрытый блок «идеальное резюме» (Золотой стандарт + пример Executive CV)
+# =============================================================================
+
+def _menu_texts() -> list:
+    from bot.keyboards import get_main_menu_keyboard
+
+    return [b.text for row in get_main_menu_keyboard().keyboard for b in row]
+
+
+def _standards_texts() -> list:
+    from bot.keyboards import get_standards_keyboard
+
+    return [b.text for row in get_standards_keyboard().inline_keyboard for b in row]
+
+
+def test_ideal_resume_hidden_from_menu_by_default(monkeypatch) -> None:
+    """Тест 60: по умолчанию кнопок про идеальное резюме в меню нет."""
+    monkeypatch.delenv("SHOW_IDEAL_RESUME_UI", raising=False)
+
+    main_menu = _menu_texts()
+    assert "🏛 Пример идеального резюме" not in main_menu
+    assert "📤 Загрузить резюме" in main_menu and "🔍 Поиск вакансий" in main_menu
+    assert "🧭 Найти каналы и сайты" in main_menu
+
+    standards = _standards_texts()
+    assert not any("Золотой стандарт" in text for text in standards)
+    assert not any("пример идеального резюме" in text.lower() for text in standards)
+    assert "🌐 Универсальный ATS (STAR/XYZ)" in standards
+    assert "✏️ Задать свои стандарты рынка текстом" in standards
+
+
+def test_ideal_resume_can_be_returned_with_flag(monkeypatch) -> None:
+    """Тест 61: с SHOW_IDEAL_RESUME_UI=1 пункты возвращаются (функция не удалена)."""
+    monkeypatch.setenv("SHOW_IDEAL_RESUME_UI", "1")
+
+    assert "🏛 Пример идеального резюме" in _menu_texts()
+    standards = _standards_texts()
+    assert any("Золотой стандарт: Executive CV" in text for text in standards)
+    assert any("пример идеального резюме" in text.lower() for text in standards)
+    assert any("Вернуть Золотой стандарт" in text for text in standards)
+
+
+@pytest.mark.asyncio
+async def test_ideal_resume_commands_are_disabled(monkeypatch, db: Database) -> None:
+    """Тест 62: /example_cv и /gold_standard отвечают уведомлением, а не показывают пример."""
+    from bot.handlers.standards import cb_show_ideal_cv_example, cmd_gold_standard, cmd_show_ideal_cv_example
+
+    monkeypatch.delenv("SHOW_IDEAL_RESUME_UI", raising=False)
+
+    class FakeMessage:
+        def __init__(self) -> None:
+            self.sent: list = []
+            self.documents: list = []
+
+        async def answer(self, text, **kwargs):
+            self.sent.append((text, kwargs))
+            return self
+
+        async def answer_document(self, **kwargs):
+            self.documents.append(kwargs)
+            return self
+
+        async def edit_text(self, text, **kwargs):
+            self.sent.append((text, kwargs))
+            return self
+
+    class FakeCallback:
+        def __init__(self, message) -> None:
+            self.data = "std_action:example"
+            self.message = message
+            self.answers = 0
+
+            class _User:
+                id = 740
+
+            self.from_user = _User()
+
+        async def answer(self, *args, **kwargs):
+            self.answers += 1
+
+    state = _fsm_context(740)
+
+    example_msg = FakeMessage()
+    await cmd_show_ideal_cv_example(example_msg, state)
+    assert "скрыт" in example_msg.sent[-1][0]
+    assert example_msg.documents == [], "файл с примером не отправляется"
+
+    gold_msg = FakeMessage()
+    await cmd_gold_standard(gold_msg, state, db)
+    assert "скрыт" in gold_msg.sent[-1][0]
+    # стандарт при этом не меняется — остаётся прежний
+    from bot.services.market_standards import get_market_standards
+
+    assert (await get_market_standards(db=db, user_id=740))["preset_key"] == "executive_cv_2026"
+
+    callback_msg = FakeMessage()
+    await cb_show_ideal_cv_example(FakeCallback(callback_msg))
+    assert "скрыт" in callback_msg.sent[-1][0]
+    assert callback_msg.documents == []
+
+
+@pytest.mark.asyncio
+async def test_telegram_command_menu_hides_ideal_resume(monkeypatch) -> None:
+    """Тест 63: в меню команд Telegram нет /gold_standard и /example_cv (по флагу)."""
+    from main import setup_bot_commands
+
+    class FakeBot:
+        def __init__(self) -> None:
+            self.commands = []
+
+        async def set_my_commands(self, commands):
+            self.commands = [c.command for c in commands]
+
+    monkeypatch.delenv("SHOW_IDEAL_RESUME_UI", raising=False)
+    bot = FakeBot()
+    await setup_bot_commands(bot)
+    assert "gold_standard" not in bot.commands and "example_cv" not in bot.commands
+    assert "upload_resume" in bot.commands and "search" in bot.commands
+
+    monkeypatch.setenv("SHOW_IDEAL_RESUME_UI", "1")
+    bot_on = FakeBot()
+    await setup_bot_commands(bot_on)
+    assert "gold_standard" in bot_on.commands and "example_cv" in bot_on.commands
+
+
+# =============================================================================
+# Область поиска (Telegram / сайты / карьерные страницы / везде) + дедупликация
+# =============================================================================
+
+def test_source_scopes_classification_and_filtering() -> None:
+    """Тест 66: источники правильно делятся на Telegram, сайты и карьерные страницы."""
+    from bot.database import DEFAULT_SOURCES
+    from bot.services.source_scopes import (
+        SCOPE_ALL,
+        SCOPE_CAREER,
+        SCOPE_TELEGRAM,
+        SCOPE_WEB,
+        classify_source_scope,
+        count_sources_by_scope,
+        filter_sources_by_scope,
+    )
+
+    assert classify_source_scope(
+        {"title": "TG: x", "canonical_url": "https://t.me/x", "parse_url": "https://t.me/s/x",
+         "source_type": "tg_channel"}
+    ) == SCOPE_TELEGRAM
+    # Агрегатор с «career» в домене — не карьерная страница компании
+    assert classify_source_scope(
+        {"title": "Хабр Карьера", "canonical_url": "https://career.habr.com",
+         "parse_url": "https://career.habr.com/vacancies/rss", "source_type": "website"}
+    ) == SCOPE_WEB
+    assert classify_source_scope(
+        {"title": "hh", "canonical_url": "https://hh.ru",
+         "parse_url": "https://api.hh.ru/vacancies", "source_type": "website"}
+    ) == SCOPE_WEB
+    assert classify_source_scope(
+        {"title": "Карьера: Ozon", "canonical_url": "https://job.ozon.ru/vacancies/",
+         "parse_url": "https://job.ozon.ru/vacancies/", "source_type": "website"}
+    ) == SCOPE_CAREER
+    assert classify_source_scope(
+        {"title": "Карьера: VK", "canonical_url": "https://team.vk.company/vacancy/",
+         "parse_url": "https://team.vk.company/vacancy/", "source_type": "career"}
+    ) == SCOPE_CAREER
+
+    counts = count_sources_by_scope(DEFAULT_SOURCES)
+    assert counts[SCOPE_ALL] == len(DEFAULT_SOURCES) == 169
+    assert counts[SCOPE_TELEGRAM] == 135
+    assert counts[SCOPE_CAREER] == 6
+    assert counts[SCOPE_TELEGRAM] + counts[SCOPE_WEB] + counts[SCOPE_CAREER] == counts[SCOPE_ALL]
+
+    career_only = filter_sources_by_scope(DEFAULT_SOURCES, SCOPE_CAREER)
+    assert len(career_only) == 6
+    assert all("career" in src["source_type"] or "карьер" in src["title"].lower() for src in career_only)
+    assert filter_sources_by_scope(DEFAULT_SOURCES, SCOPE_ALL) == DEFAULT_SOURCES
+    assert all(
+        src["source_type"] == "tg_channel"
+        for src in filter_sources_by_scope(DEFAULT_SOURCES, SCOPE_TELEGRAM)
+    )
+
+
+def test_search_keyboards_offer_four_scopes() -> None:
+    """Тест 67: в меню поиска четыре области, период наследует выбранную область."""
+    from bot.keyboards import get_search_period_keyboard, get_search_scope_keyboard
+
+    scope_buttons = [row[0] for row in get_search_scope_keyboard().inline_keyboard]
+    assert [b.callback_data for b in scope_buttons] == [
+        "search_scope:all",
+        "search_scope:telegram",
+        "search_scope:web",
+        "search_scope:career",
+    ]
+    assert "Telegram" in scope_buttons[1].text
+    assert "карьерные" in scope_buttons[3].text
+
+    period_row = get_search_period_keyboard("career").inline_keyboard[0]
+    assert [b.callback_data for b in period_row] == [
+        "search_period:1:career",
+        "search_period:7:career",
+        "search_period:30:career",
+    ]
+    # обратная совместимость: без области — «везде»
+    assert [b.callback_data for b in get_search_period_keyboard().inline_keyboard[0]] == [
+        "search_period:1:all",
+        "search_period:7:all",
+        "search_period:30:all",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_search_parses_only_chosen_scope(monkeypatch) -> None:
+    """Тест 68: при выборе области парсятся только её источники, остальные не трогаются."""
+    from bot.services import vacancy_parser
+
+    parsed_titles: list = []
+
+    async def fake_parse_single_source(**kwargs):
+        parsed_titles.append(kwargs["source"]["title"])
+        return []
+
+    monkeypatch.setattr(vacancy_parser, "_parse_single_source", fake_parse_single_source)
+
+    sources = [
+        {"title": "TG: канал", "canonical_url": "https://t.me/x", "parse_url": "https://t.me/s/x",
+         "source_type": "tg_channel", "is_active": 1},
+        {"title": "Сайт: hh", "canonical_url": "https://hh.ru", "parse_url": "https://api.hh.ru/vacancies",
+         "source_type": "website", "is_active": 1},
+        {"title": "Карьера: VK", "canonical_url": "https://team.vk.company/vacancy/",
+         "parse_url": "https://team.vk.company/vacancy/", "source_type": "career", "is_active": 1},
+    ]
+
+    class FakeDB:
+        async def get_resume(self, user_id):
+            return {"extracted_role": "Коммерческий директор", "extracted_skills": ["продажи"]}
+
+        async def list_sources(self, active_only=True):
+            return list(sources)
+
+    for scope, expected in (
+        ("telegram", ["TG: канал"]),
+        ("career", ["Карьера: VK"]),
+        ("web", ["Сайт: hh"]),
+        ("all", ["TG: канал", "Сайт: hh", "Карьера: VK"]),
+    ):
+        parsed_titles.clear()
+        result = await vacancy_parser.search_vacancies_by_resume(
+            db=FakeDB(), user_id=1, period_days=7, scope=scope
+        )
+        assert parsed_titles == expected, f"область {scope}: {parsed_titles}"
+        assert result["scope"] == scope
+        assert result["total_found"] == 0
+
+    # В области нет источников — понятная ошибка, а не пустая выдача
+    class EmptyCareerDB(FakeDB):
+        async def list_sources(self, active_only=True):
+            return [s for s in sources if s["source_type"] == "tg_channel"]
+
+    with pytest.raises(ValueError) as exc:
+        await vacancy_parser.search_vacancies_by_resume(
+            db=EmptyCareerDB(), user_id=1, period_days=7, scope="career"
+        )
+    assert "карьерные страницы" in str(exc.value)
+
+
+def test_dedupe_keeps_one_variant_and_different_companies() -> None:
+    """Тест 69: дубли схлопываются в один вариант, разные компании не склеиваются."""
+    from bot.services.vacancy_dedup import deduplicate_vacancies, normalize_title
+
+    now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+    long_text = (
+        "ООО «Ромашка» ищет коммерческого директора: P&L 450 млн рублей, команда 25 человек, "
+        "B2B-продажи, вывод продуктов на рынок, работа с ключевыми клиентами."
+    )
+
+    vacancies = [
+        {"title": "Коммерческий директор", "url": "https://t.me/a/1", "snippet": long_text,
+         "published_at": now, "relevance_score": 40, "source_title": "TG: a",
+         "source_type": "tg_channel", "company": "ООО Ромашка"},
+        # тот же текст, другой канал и URL — дубль
+        {"title": "Коммерческий директор (Москва)", "url": "https://t.me/b/2", "snippet": long_text,
+         "published_at": now, "relevance_score": 30, "source_title": "TG: b",
+         "source_type": "tg_channel", "company": "ООО Ромашка"},
+        # та же должность, другая компания — НЕ дубль
+        {"title": "Коммерческий директор", "url": "https://hh.ru/vacancy/3",
+         "snippet": "Сеть ритейла приглашает коммерческого директора.",
+         "published_at": now, "relevance_score": 25, "source_title": "Сайт: hh",
+         "source_type": "website", "company": "ООО Лютик"},
+        # одинаковый URL — дубль
+        {"title": "Аналитик данных", "url": "https://hh.ru/vacancy/9", "snippet": "",
+         "published_at": now, "relevance_score": 20, "source_title": "Сайт: hh",
+         "source_type": "website"},
+        {"title": "Аналитик данных", "url": "https://hh.ru/vacancy/9", "snippet": "",
+         "published_at": now, "relevance_score": 20, "source_title": "Сайт: hh",
+         "source_type": "website"},
+    ]
+
+    unique, removed = deduplicate_vacancies(vacancies)
+    assert removed == 2
+    assert len(unique) == 3
+    titles_urls = {(v["title"], v["url"]) for v in unique}
+    assert ("Коммерческий директор", "https://t.me/a/1") in titles_urls, "остаётся лучший вариант из группы"
+    assert ("Коммерческий директор", "https://hh.ru/vacancy/3") in titles_urls, "другая компания сохранена"
+    assert ("Аналитик данных", "https://hh.ru/vacancy/9") in titles_urls
+
+    assert normalize_title("Коммерческий директор (Москва)") == normalize_title("Коммерческий директор")
+    assert normalize_title("🔥 ВАКАНСИЯ: Коммерческий директор!") == "коммерческий директор"
+
+
+@pytest.mark.asyncio
+async def test_search_output_reports_dedupe_and_scope(monkeypatch) -> None:
+    """Тест 70: в шапке выдачи видно область поиска и сколько дублей убрано."""
+    from bot.services import vacancy_parser
+
+    now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+    text = "Ищем коммерческого директора: P&L 450 млн, команда 25 человек, B2B, вывод продуктов на рынок, ключевые клиенты."
+    vacancies = [
+        {"title": "Коммерческий директор", "url": "https://t.me/a/1", "snippet": text,
+         "published_at": now, "relevance_score": 40, "source_title": "TG: a",
+         "source_type": "tg_channel", "company": "ООО Ромашка", "matched_skills": ["продажи"]},
+        {"title": "Коммерческий директор", "url": "https://t.me/b/2", "snippet": text,
+         "published_at": now, "relevance_score": 35, "source_title": "TG: b",
+         "source_type": "tg_channel", "company": "ООО Ромашка", "matched_skills": ["продажи"]},
+    ]
+
+    async def fake_parse_single_source(**kwargs):
+        return list(vacancies)
+
+    monkeypatch.setattr(vacancy_parser, "_parse_single_source", fake_parse_single_source)
+
+    class FakeDB:
+        async def get_resume(self, user_id):
+            return {"extracted_role": "Коммерческий директор", "extracted_skills": ["продажи"]}
+
+        async def list_sources(self, active_only=True):
+            return [{"title": "TG: a", "canonical_url": "https://t.me/a", "parse_url": "https://t.me/s/a",
+                     "source_type": "tg_channel", "is_active": 1}]
+
+    result = await vacancy_parser.search_vacancies_by_resume(
+        db=FakeDB(), user_id=1, period_days=7, scope="telegram"
+    )
+    assert result["total_found"] == 1
+    assert result["duplicates_removed"] == 1
+
+    body, _footer = vacancy_parser.format_vacancies_search_blocks(result)
+    assert "Область поиска:" in body
+    assert "только Telegram-каналы" in body
+    assert "Найдено уникальных вакансий:** 1" in body
+    assert "Убрано 1 дубль" in body
+
+
+def test_career_page_parser_extracts_jsonld_and_links() -> None:
+    """Тест 71: карьерная страница разбирается и по JSON-LD, и по ссылкам-вакансиям."""
+    from datetime import datetime, timedelta, timezone
+
+    from bot.services.vacancy_parser import parse_career_page_html
+
+    html = """
+    <html><body>
+      <script type="application/ld+json">
+      {"@context":"https://schema.org","@type":"JobPosting","title":"Коммерческий директор",
+       "url":"https://job.ozon.ru/vacancy/777","datePosted":"2026-11-15",
+       "description":"<p>P&L, B2B продажи, команда 30 человек</p>"}
+      </script>
+      <a href="/vacancy/1">Коммерческий директор по продажам</a>
+      <a href="/vacancy/2">Все вакансии</a>
+      <a href="/about">О компании</a>
+    </body></html>
+    """
+
+    source = {"title": "Карьера: Ozon", "canonical_url": "https://job.ozon.ru/vacancies/",
+              "source_type": "career"}
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    vacancies = parse_career_page_html(
+        html=html, source=source, role="Коммерческий директор",
+        skills=["P&L", "продажи", "B2B"], cutoff_dt=cutoff,
+    )
+    urls = {v["url"] for v in vacancies}
+    titles = {v["title"] for v in vacancies}
+    assert "https://job.ozon.ru/vacancy/777" in urls, "JSON-LD вакансия найдена"
+    assert "https://job.ozon.ru/vacancy/1" in urls, "ссылка-вакансия найдена"
+    assert "Все вакансии" not in titles and "О компании" not in titles, "навигация отфильтрована"
+    assert all(v["source_type"] == "career" for v in vacancies)

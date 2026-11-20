@@ -10,6 +10,7 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
+from bot.config import IDEAL_RESUME_DISABLED_TEXT, ideal_resume_ui_enabled
 from bot.database import Database
 from bot.keyboards import get_standards_keyboard
 from bot.services.market_standards import (
@@ -52,6 +53,9 @@ async def cmd_gold_standard(
 ) -> None:
     """Отдельная команда установки Золотого стандарта Executive CV (Framework 2026+)."""
     await state.clear()
+    if not ideal_resume_ui_enabled():
+        await message.answer(IDEAL_RESUME_DISABLED_TEXT, parse_mode="Markdown")
+        return
     updated = await set_gold_standard_executive_cv_2026(
         db=db, user_id=message.from_user.id  # type: ignore
     )
@@ -106,6 +110,9 @@ async def _send_ideal_cv_example(message: Message) -> None:
 async def cmd_show_ideal_cv_example(message: Message, state: FSMContext) -> None:
     """Отдельная функция показа примера идеального резюме по «Золотому стандарту»."""
     await state.clear()
+    if not ideal_resume_ui_enabled():
+        await message.answer(IDEAL_RESUME_DISABLED_TEXT, parse_mode="Markdown")
+        return
     await _send_ideal_cv_example(message)
 
 
@@ -113,8 +120,14 @@ async def cmd_show_ideal_cv_example(message: Message, state: FSMContext) -> None
 async def cb_show_ideal_cv_example(callback: CallbackQuery) -> None:
     """Показ примера идеального резюме по inline-кнопке меню стандартов."""
     await callback.answer("Показываю эталонный пример Executive CV")
-    if callback.message:
-        await _send_ideal_cv_example(callback.message)
+    if not callback.message:
+        return
+    if not ideal_resume_ui_enabled():
+        await callback.message.answer(  # type: ignore[union-attr]
+            IDEAL_RESUME_DISABLED_TEXT, parse_mode="Markdown"
+        )
+        return
+    await _send_ideal_cv_example(callback.message)
 
 
 @router.message(Command("standards"))
@@ -152,6 +165,13 @@ async def cb_select_standards_preset(
 ) -> None:
     """Установка выбранного отраслевого пресета стандартов рынка."""
     preset_key = (callback.data or "").split(":", 1)[1]
+    if preset_key == "executive_cv_2026" and not ideal_resume_ui_enabled():
+        await callback.answer()
+        if callback.message:
+            await callback.message.answer(  # type: ignore[union-attr]
+                IDEAL_RESUME_DISABLED_TEXT, parse_mode="Markdown"
+            )
+        return
     updated = await set_market_standards(
         db=db,
         user_id=callback.from_user.id,
@@ -170,6 +190,14 @@ async def cb_select_standards_preset(
 @router.callback_query(F.data == "std_action:reset")
 async def cb_reset_standards(callback: CallbackQuery, db: Database) -> None:
     """Сброс стандартов рынка к базовому универсальному ATS-стандарту."""
+    if not ideal_resume_ui_enabled():
+        # «Вернуть Золотой стандарт» — часть скрытого блока
+        await callback.answer()
+        if callback.message:
+            await callback.message.answer(  # type: ignore[union-attr]
+                IDEAL_RESUME_DISABLED_TEXT, parse_mode="Markdown"
+            )
+        return
     updated = await reset_market_standards(db=db, user_id=callback.from_user.id)
     await callback.answer("Стандарты сброшены к базовым")
     if callback.message:

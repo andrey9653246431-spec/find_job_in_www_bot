@@ -11,9 +11,21 @@ from aiogram.types import CallbackQuery, Message
 from bot.database import Database
 from bot.config import config
 from bot.handlers.messaging import safe_answer, safe_edit_text
-from bot.keyboards import get_search_period_keyboard, get_search_results_keyboard
+from bot.keyboards import (
+    get_search_period_keyboard,
+    get_search_results_keyboard,
+    get_search_scope_keyboard,
+)
 from bot.services.message_utils import MAX_MESSAGE_LENGTH, split_message
 from bot.services.search_sessions import get_search_result, store_search_result, total_items
+from bot.services.source_scopes import (
+    SCOPE_CAREER,
+    SCOPE_TELEGRAM,
+    SCOPE_WEB,
+    count_sources_by_scope,
+    normalize_scope,
+    scope_label,
+)
 from bot.services.vacancy_parser import (
     format_vacancies_search_blocks,
     search_vacancies_by_resume,
@@ -71,8 +83,12 @@ async def _render_search_page(
             )
 
 
-async def _prompt_search_period(message: Message, user_id: int, db: Database) -> None:
-    """Проверяет наличие резюме и предлагает выбрать период поиска (1 день, 1 неделя, 1 месяц)."""
+async def _prompt_search_scope(message: Message, user_id: int, db: Database) -> None:
+    """Проверяет наличие резюме и предлагает выбрать область поиска.
+
+    Области: только Telegram, только сайты и агрегаторы, только карьерные
+    страницы компаний, везде. Период (1/7/30 дней) спрашивается на следующем шаге.
+    """
     resume = await db.get_resume(user_id)
     if not resume:
         await message.answer(
@@ -84,24 +100,54 @@ async def _prompt_search_period(message: Message, user_id: int, db: Database) ->
         return
 
     sources = await db.list_sources(active_only=True)
+    counts = count_sources_by_scope(sources)
     skills = ", ".join(resume.get("extracted_skills") or []) or "общий профиль"
 
     await message.answer(
         "🔍 **Поиск вакансий по вашему резюме**\n\n"
         f"🎯 **Целевая должность:** {resume.get('extracted_role')}\n"
-        f"🛠 **Ключевые навыки для поиска:** {skills}\n"
-        f"📡 **Активных источников в базе (ТГ-каналы и сайты):** {len(sources)}\n\n"
-        "👇 **Выберите период, за который нужно спарсить и найти вакансии:**",
-        reply_markup=get_search_period_keyboard(),
+        f"🛠 **Ключевые навыки для поиска:** {skills}\n\n"
+        f"📡 **Источники в базе:** всего {counts['all']} — "
+        f"📡 Telegram {counts[SCOPE_TELEGRAM]}, "
+        f"🌐 сайты и агрегаторы {counts[SCOPE_WEB]}, "
+        f"🏢 карьерные страницы {counts[SCOPE_CAREER]}\n\n"
+        "👇 **Где искать вакансии?**\n"
+        "_Дубли схлопываются: одна вакансия — один вариант в выдаче, "
+        "даже если она опубликована в нескольких каналах и на сайтах._",
+        reply_markup=get_search_scope_keyboard(),
         parse_mode="Markdown",
     )
+
+
+async def _prompt_search_period(
+    message: Message, scope: str = "all", edit: bool = False
+) -> None:
+    """Предлагает выбрать период поиска (1 день, 1 неделя, 1 месяц) для выбранной области."""
+    scope = normalize_scope(scope)
+    text = (
+        f"🎛 **Область поиска:** {scope_label(scope)}\n\n"
+        "👇 **Выберите период, за который нужно спарсить и найти вакансии:**"
+    )
+    if edit:
+        await safe_edit_text(
+            text,
+            message,
+            reply_markup=get_search_period_keyboard(scope),
+            parse_mode="Markdown",
+        )
+    else:
+        await message.answer(
+            text,
+            reply_markup=get_search_period_keyboard(scope),
+            parse_mode="Markdown",
+        )
 
 
 @router.message(Command("search"))
 @router.message(F.text == "🔍 Поиск вакансий")
 async def cmd_search_vacancies(message: Message, db: Database) -> None:
     """Команда /search или кнопка «🔍 Поиск вакансий»."""
-    await _prompt_search_period(
+    await _prompt_search_scope(
         message=message,
         user_id=message.from_user.id,  # type: ignore
         db=db,
@@ -113,20 +159,52 @@ async def cb_quick_search_vacancies(callback: CallbackQuery, db: Database) -> No
     """Открытие выбора периода поиска после загрузки резюме."""
     await callback.answer()
     if callback.message:
-        await _prompt_search_period(
+        await _prompt_search_scope(
             message=callback.message,  # type: ignore
             user_id=callback.from_user.id,
             db=db,
         )
 
 
+@router.callback_query(F.data == "search_scope_menu")
+async def cb_show_search_scopes(callback: CallbackQuery, db: Database) -> None:
+    """Возвращает пользователя к выбору области поиска."""
+    await callback.answer()
+    if callback.message:
+        await _prompt_search_scope(
+            message=callback.message,  # type: ignore[arg-type]
+            user_id=callback.from_user.id,
+            db=db,
+        )
+
+
+@router.callback_query(F.data.startswith("search_scope:"))
+async def cb_choose_search_scope(callback: CallbackQuery) -> None:
+    """Пользователь выбрал, где искать: везде / Telegram / сайты / карьерные страницы."""
+    await callback.answer()
+    if not callback.message:
+        return
+    scope = normalize_scope((callback.data or "search_scope:all").split(":", 1)[1])
+    await _prompt_search_period(
+        message=callback.message,  # type: ignore[arg-type]
+        scope=scope,
+        edit=True,
+    )
+
+
 @router.callback_query(F.data.startswith("search_period:"))
 async def cb_execute_search_by_period(
     callback: CallbackQuery, db: Database
 ) -> None:
-    """Запускает парсинг всех ТГ-каналов и сайтов из БД за выбранный период (1, 7 или 30 дней)."""
+    """Запускает парсинг источников из БД за выбранный период (1, 7 или 30 дней).
+
+    Callback-данные: ``search_period:<дни>[:<область>]``. Старый формат без
+    области (``search_period:7``) считается поиском «везде».
+    """
     await callback.answer()
-    raw_period = (callback.data or "search_period:7").split(":", 1)[1]
+    parts = (callback.data or "search_period:7").split(":")
+    raw_period = parts[1] if len(parts) > 1 else "7"
+    scope = normalize_scope(parts[2] if len(parts) > 2 else "all")
     try:
         period_days = int(raw_period)
     except ValueError:
@@ -138,9 +216,10 @@ async def cb_execute_search_by_period(
     period_names = {1: "1 день", 7: "1 неделю", 30: "1 месяц"}
     p_label = period_names.get(period_days, f"{period_days} дн.")
 
+    scope_emoji = {SCOPE_TELEGRAM: "📡", SCOPE_WEB: "🌐", SCOPE_CAREER: "🏢"}.get(scope, "🌍")
     status_msg = await callback.message.answer(
-        f"⏳ **Запускаю парсинг ТГ-каналов и сайтов из базы данных за {p_label}...**\n"
-        "_Это может занять несколько секунд._",
+        f"⏳ **Запускаю поиск за {p_label}** — {scope_emoji} {scope_label(scope)}...\n"
+        "_Дубли вакансий схлопываются автоматически: в выдаче один вариант из группы._",
         parse_mode="Markdown",
     )
 
@@ -149,6 +228,7 @@ async def cb_execute_search_by_period(
             db=db,
             user_id=callback.from_user.id,
             period_days=period_days,
+            scope=scope,
         )
         # Кладём полный список в память: «Показать ещё» не запускает парсинг заново
         store_search_result(callback.from_user.id, search_result)
@@ -180,7 +260,7 @@ async def cb_show_more_vacancies(callback: CallbackQuery) -> None:
     if not result:
         await safe_answer(
             "⚠️ **Результаты поиска устарели.**\n"
-            "Запустите поиск заново: /search → выберите период.",
+            "Запустите поиск заново: /search → выберите область поиска и период.",
             callback.message,  # type: ignore[arg-type]
             parse_mode="Markdown",
         )
@@ -215,7 +295,7 @@ async def cb_show_all_vacancies(callback: CallbackQuery) -> None:
     if not result:
         await safe_answer(
             "⚠️ **Результаты поиска устарели.**\n"
-            "Запустите поиск заново: /search → выберите период.",
+            "Запустите поиск заново: /search → выберите область поиска и период.",
             callback.message,  # type: ignore[arg-type]
             parse_mode="Markdown",
         )
