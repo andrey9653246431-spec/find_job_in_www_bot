@@ -47,6 +47,24 @@ class Config:
         "on",
     }
 
+    # Хранить ли исходный текст загруженного резюме в БД.
+    # По умолчанию 0 — ТЕКСТ НЕ ХРАНИТСЯ: в базе остаются только извлечённый профиль
+    # (должность + навыки) и криптографический отпечаток резюме (SHA-256).
+    # STORE_RAW_RESUME=1 возвращает хранение (нужно для адаптации под стандарты).
+    store_raw_resume: bool = os.getenv("STORE_RAW_RESUME", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+    # Кто может смотреть статистику посещаемости (/stats). Пусто — команда открыта всем.
+    # Задаётся списком ID через запятую: ADMIN_IDS=123456789,987654321
+    admin_ids: str = os.getenv("ADMIN_IDS", "")
+
+    # Часовой пояс отчёта посещаемости (по умолчанию Москва)
+    stats_tz: str = os.getenv("STATS_TZ", "Europe/Moscow")
+
     # Таймаут HTTP-запросов при парсинге (сек)
     http_timeout: int = int(os.getenv("HTTP_TIMEOUT", "15"))
     max_vacancies_per_message: int = int(os.getenv("MAX_VACANCIES_PER_MESSAGE", "10"))
@@ -87,3 +105,22 @@ IDEAL_RESUME_DISABLED_TEXT = (
     "Доступные действия: **📤 Загрузить резюме**, **✨ Адаптировать резюме**, "
     "**📐 Стандарты рынка**, **🔍 Поиск вакансий**."
 )
+
+
+def admin_user_ids() -> tuple:
+    """ID администраторов из ``ADMIN_IDS`` (через запятую). Пустой кортеж — доступ всем."""
+    return tuple(
+        int(chunk) for chunk in (os.getenv("ADMIN_IDS", "") or "").replace(";", ",").split(",")
+        if chunk.strip().lstrip("-").isdigit()
+    )
+
+
+def is_stats_admin(user_id: int) -> bool:
+    """Может ли пользователь смотреть статистику: админ из списка или список не задан."""
+    admins = admin_user_ids()
+    return not admins or int(user_id) in admins
+
+
+def raw_resume_storage_enabled() -> bool:
+    """Хранится ли исходный текст резюме в БД (``STORE_RAW_RESUME=1``)."""
+    return os.getenv("STORE_RAW_RESUME", "0").strip().lower() in {"1", "true", "yes", "on"}

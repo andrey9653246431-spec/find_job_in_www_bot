@@ -6,6 +6,7 @@ from bot.handlers.standards import router as standards_router
 from bot.handlers.sources import router as sources_router
 from bot.handlers.search import router as search_router
 from bot.handlers.resources import router as resources_router
+from bot.handlers.stats import router as stats_router
 
 
 def register_all_routers(dp: Dispatcher) -> None:
@@ -16,3 +17,4 @@ def register_all_routers(dp: Dispatcher) -> None:
     dp.include_router(sources_router)
     dp.include_router(search_router)
     dp.include_router(resources_router)
+    dp.include_router(stats_router)

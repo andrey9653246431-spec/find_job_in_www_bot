@@ -8,7 +8,12 @@ from aiogram.types import BotCommand
 from bot.config import adapt_resume_ui_enabled, config, ideal_resume_ui_enabled
 from bot.database import Database
 from bot.handlers import register_all_routers
-from bot.services.file_extractor import repair_invalid_resume_profiles
+from bot.middlewares import VisitCounterMiddleware
+from bot.config import raw_resume_storage_enabled
+from bot.services.file_extractor import (
+    purge_stored_resume_texts,
+    repair_invalid_resume_profiles,
+)
 
 
 async def setup_bot_commands(bot: Bot) -> None:
@@ -25,6 +30,7 @@ async def setup_bot_commands(bot: Bot) -> None:
         BotCommand(command="set_role", description="✏️ Указать целевую должность вручную"),
         BotCommand(command="set_skills", description="✏️ Указать ключевые навыки вручную"),
         BotCommand(command="reset_profile", description="🔄 Пересобрать профиль из резюме"),
+        BotCommand(command="stats", description="📊 Статистика посещаемости"),
         BotCommand(command="help", description="📖 Справка по функциям"),
     ]
     if adapt_resume_ui_enabled():
@@ -75,6 +81,16 @@ async def main() -> None:
     if added_sources:
         logger.info("Добавлено новых источников вакансий в БД: %d", added_sources)
 
+    # Приватный режим: текст резюме в базе не хранится. Если в базе остались
+    # тексты от прошлых версий — заменяем их на SHA-256 хэш (профиль сохраняется).
+    if not raw_resume_storage_enabled():
+        purged = await purge_stored_resume_texts(db)
+        if purged:
+            logger.info(
+                "Приватный режим: удалены сохранённые тексты резюме (%d), оставлены SHA-256 хэши",
+                purged,
+            )
+
     # Авто-починка профилей, где вместо должности/навыков ранее сохранилось ФИО
     repaired = await repair_invalid_resume_profiles(db)
     if repaired:
@@ -85,6 +101,12 @@ async def main() -> None:
 
     # Передаём экземпляр БД в контекст aiogram (доступен во всех хендлерах как аргумент `db: Database`)
     dp["db"] = db
+
+    # Счётчик посещаемости: считает любой заход (сообщение, команда, кнопка).
+    # Ошибка записи в лог-файл статистики не ломает обработку события.
+    visit_counter = VisitCounterMiddleware(db=db)
+    dp.message.middleware(visit_counter)
+    dp.callback_query.middleware(visit_counter)
 
     register_all_routers(dp)
 

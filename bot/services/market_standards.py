@@ -1401,7 +1401,12 @@ async def adapt_resume_to_market_standards(
         )
 
     standards = await get_market_standards(db, user_id)
-    raw_text = resume_record["raw_text"]
+    raw_text = (resume_record.get("raw_text") or "").strip()
+    if not raw_text:
+        raise ValueError(
+            "Текст резюме в базе не хранится (приватный режим), поэтому адаптировать нечего.\n"
+            "Загрузите резюме заново или включите хранение текста: `STORE_RAW_RESUME=1`."
+        )
     extracted_role = resume_record.get("extracted_role") or "Специалист"
     extracted_skills = resume_record.get("extracted_skills") or []
 

@@ -83,10 +83,14 @@ async def test_upload_resume_function(db: Database) -> None:
 
 
 @pytest.mark.asyncio
-async def test_market_standards_and_resume_adaptation(db: Database) -> None:
+async def test_market_standards_and_resume_adaptation(monkeypatch, db: Database) -> None:
     """Тест 2 и 3: Отдельная функция задания стандартов рынка внутри бота
     и отдельная функция адаптации резюме под эти стандарты.
     """
+    # Эти тесты проверяют работу с исходным текстом резюме — включаем хранение текста
+    # (по умолчанию бот текст не хранит, см. приватный режим STORE_RAW_RESUME).
+    monkeypatch.setenv("STORE_RAW_RESUME", "1")
+
     user_id = 202
     sample_resume = (
         "Алексей Соколов\n"
@@ -133,10 +137,14 @@ async def test_market_standards_and_resume_adaptation(db: Database) -> None:
 
 
 @pytest.mark.asyncio
-async def test_gold_standard_executive_cv_2026_framework(db: Database) -> None:
+async def test_gold_standard_executive_cv_2026_framework(monkeypatch, db: Database) -> None:
     """Тест 2.1: Отдельная функция формирования идеального резюме по
     «Золотому стандарту» — АРХИТЕКТУРА ИДЕАЛЬНОГО EXECUTIVE CV (Framework 2026+).
     """
+    # Эти тесты проверяют работу с исходным текстом резюме — включаем хранение текста
+    # (по умолчанию бот текст не хранит, см. приватный режим STORE_RAW_RESUME).
+    monkeypatch.setenv("STORE_RAW_RESUME", "1")
+
     user_id = 205
     raw_executive_resume = (
         "Сергей Волков\n"
@@ -336,10 +344,14 @@ def test_vacancy_parsing_and_period_filtering() -> None:
 
 
 @pytest.mark.asyncio
-async def test_gold_standard_multi_role_and_clean_ats_keywords(db: Database) -> None:
+async def test_gold_standard_multi_role_and_clean_ats_keywords(monkeypatch, db: Database) -> None:
     """Тест 2.2: Золотой стандарт — несколько ролей, чистые ATS-теги без дублей,
     корректный период из шапки компании и Scope без служебных ярлыков.
     """
+    # Эти тесты проверяют работу с исходным текстом резюме — включаем хранение текста
+    # (по умолчанию бот текст не хранит, см. приватный режим STORE_RAW_RESUME).
+    monkeypatch.setenv("STORE_RAW_RESUME", "1")
+
     user_id = 207
     raw_resume = (
         "Иван Петров\n"
@@ -530,10 +542,16 @@ async def test_resume_profile_never_uses_name_as_role_or_skills(db: Database) ->
 
 
 @pytest.mark.asyncio
-async def test_resume_profile_extraction_and_manual_override(db: Database) -> None:
+async def test_resume_profile_extraction_and_manual_override(
+    monkeypatch, db: Database
+) -> None:
     """Тест 8: корректное извлечение должности/навыков (включая многострочный блок
     «Навыки») и ручная корректировка через update_resume_profile (/set_role, /set_skills).
     """
+    # Эти тесты проверяют работу с исходным текстом резюме — включаем хранение текста
+    # (по умолчанию бот текст не хранит, см. приватный режим STORE_RAW_RESUME).
+    monkeypatch.setenv("STORE_RAW_RESUME", "1")
+
     from bot.services.file_extractor import build_resume_profile
 
     user_id = 402
@@ -570,10 +588,14 @@ async def test_resume_profile_extraction_and_manual_override(db: Database) -> No
 
 
 @pytest.mark.asyncio
-async def test_repair_legacy_broken_profile(db: Database) -> None:
+async def test_repair_legacy_broken_profile(monkeypatch, db: Database) -> None:
     """Тест 9: авто-починка ранее сохранённого «сломанного» профиля,
     где вместо должности и навыков было записано ФИО (случай из продакшена).
     """
+    # Эти тесты проверяют работу с исходным текстом резюме — включаем хранение текста
+    # (по умолчанию бот текст не хранит, см. приватный режим STORE_RAW_RESUME).
+    monkeypatch.setenv("STORE_RAW_RESUME", "1")
+
     from bot.services.file_extractor import (
         repair_invalid_resume_profiles,
         repair_profile_values,
@@ -2862,3 +2884,357 @@ async def test_telegram_command_menu_hides_adapt_resume(monkeypatch) -> None:
     bot_on = FakeBot()
     await setup_bot_commands(bot_on)
     assert "adapt_resume" in bot_on.commands
+
+
+# =============================================================================
+# Счётчик посещаемости: таблицы, middleware, /stats
+# =============================================================================
+
+def _stats_message(user_id: int, text: str = "/stats"):
+    """Фейковое сообщение для /stats."""
+    from datetime import datetime, timezone
+
+    from aiogram.types import Chat, Message, User
+
+    return Message(
+        message_id=1,
+        date=datetime.now(timezone.utc),
+        chat=Chat(id=user_id, type="private"),
+        from_user=User(id=user_id, is_bot=False, first_name="U"),
+        text=text,
+    )
+
+
+@pytest.mark.asyncio
+async def test_visits_tables_and_recording(db: Database) -> None:
+    """Тест 76: заходы и действия пишутся в БД и агрегируются в статистику."""
+    import aiosqlite
+
+    from bot.services.visits import collect_visit_stats, record_event, stats_timezone, today_in_tz
+
+    async with aiosqlite.connect(db.db_path) as raw:
+        await raw.execute("DELETE FROM visits")
+        await raw.execute("DELETE FROM visit_actions")
+        await raw.commit()
+
+    tz = stats_timezone()
+    for user_id in (101, 101, 101, 202):
+        await record_event(db=db, user_id=user_id, action="🔍 Поиск вакансий", tz=tz)
+    await record_event(db=db, user_id=303, action="🚀 /start", tz=tz)
+
+    stats = await collect_visit_stats(db=db, days=7, tz=tz)
+    assert stats["users_total"] == 3
+    assert stats["active_today"] == 3
+    assert stats["new_today"] == 3
+    assert stats["events_today"] == 5
+    assert stats["events_7"] == 5
+    assert stats["today"] == today_in_tz(tz)
+    assert len(stats["series"]) == 7
+    # последний день серии — сегодня
+    assert stats["series"][-1][0] == today_in_tz(tz)
+    assert stats["series"][-1][1] == 3
+    assert dict(stats["top_actions"])["🔍 Поиск вакансий"] == 4
+
+
+@pytest.mark.asyncio
+async def test_visit_stats_formatting_has_key_blocks(db: Database) -> None:
+    """Тест 77: отчёт содержит блоки «Пользователи», «Активность», «Действия», график и топ функций."""
+    from bot.services.visits import collect_visit_stats, format_visit_stats, record_event
+
+    await record_event(db=db, user_id=901, action="📤 Загрузить резюме")
+    text = format_visit_stats(await collect_visit_stats(db=db, days=14))
+
+    assert "Статистика посещаемости" in text
+    assert "Пользователи" in text and "Активность" in text and "Действия" in text
+    assert "Активность по дням" in text
+    assert "Что делали за 7 дней" in text
+    assert "📤 Загрузить резюме" in text
+    # график — из блочных символов, дней ровно столько, сколько запрошено
+    assert any(symbol in text for symbol in "▁▂▃▄▅▆▇█")
+
+
+def test_visit_action_labels() -> None:
+    """Тест 78: middleware понимает, какой функцией пользуется человек."""
+    from aiogram.types import CallbackQuery, Chat, Message, User
+
+    from bot.middlewares import describe_action
+
+    def message(text: str):
+        return Message(
+            message_id=1,
+            date=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+            chat=Chat(id=1, type="private"),
+            from_user=User(id=1, is_bot=False, first_name="U"),
+            text=text,
+        )
+
+    def callback(data: str):
+        return CallbackQuery(id="1", from_user=User(id=1, is_bot=False, first_name="U"),
+                             chat_instance="c", data=data)
+
+    assert describe_action(message("/start")) == "🚀 /start"
+    assert describe_action(message("/search")) == "🔍 Поиск вакансий"
+    assert describe_action(message("🔍 Поиск вакансий")) == "🔍 Поиск вакансий"
+    assert describe_action(message("Опыт работы: 8 лет...")) == "✍️ Текст (резюме/другое)"
+    assert describe_action(callback("search_scope:career")) == "🔍 Поиск вакансий"
+    assert describe_action(callback("search_period:7:web")) == "🔍 Поиск вакансий"
+    assert describe_action(callback("quick_action:adapt")) == "✨ Адаптация резюме"
+    assert describe_action(callback("profile_edit:role")) == "✏️ Правка профиля"
+    assert describe_action(callback("src_action:list")) == "🌐 Источники вакансий"
+
+
+@pytest.mark.asyncio
+async def test_visit_middleware_counts_and_never_breaks_handling(db: Database, monkeypatch) -> None:
+    """Тест 79: middleware считает событие, а при сбое записи обработка продолжается."""
+    import aiosqlite
+
+    from bot.middlewares import VisitCounterMiddleware
+
+    async with aiosqlite.connect(db.db_path) as raw:
+        await raw.execute("DELETE FROM visits")
+        await raw.execute("DELETE FROM visit_actions")
+        await raw.commit()
+
+    async def handler(event, data):
+        return "handled"
+
+    message = _stats_message(555, "/search")
+    middleware = VisitCounterMiddleware(db=db)
+    result = await middleware(handler, message, {"db": db, "event_from_user": message.from_user})
+    assert result == "handled"
+
+    async with aiosqlite.connect(db.db_path) as raw:
+        cursor = await raw.execute("SELECT user_id, events FROM visits")
+        rows = await cursor.fetchall()
+        cursor = await cursor.execute("SELECT action, events FROM visit_actions")
+        actions = await cursor.fetchall()
+    assert rows and rows[0][0] == 555 and rows[0][1] == 1
+    assert actions and actions[0][0] == "🔍 Поиск вакансий"
+
+    # сбой счётчика не должен ломать обработку события
+    async def boom(*args, **kwargs):
+        raise RuntimeError("DB locked")
+
+    monkeypatch.setattr("bot.middlewares.visits.record_event", boom)
+    assert await middleware(handler, message, {"db": db, "event_from_user": message.from_user}) == "handled"
+
+
+@pytest.mark.asyncio
+async def test_stats_command_is_admin_only_when_configured(monkeypatch, db: Database) -> None:
+    """Тест 80: /stats работает без ADMIN_IDS и закрывается, если список задан."""
+    from bot.handlers.stats import cmd_visit_stats
+
+    class FakeMessage:
+        def __init__(self, text: str) -> None:
+            self.text = text
+            self.sent: list = []
+
+            class _User:
+                id = 424242
+
+            self.from_user = _User()
+
+        async def answer(self, text, **kwargs):
+            self.sent.append((text, kwargs))
+            return self
+
+    # список админов не задан — команда доступна, отчёт приходит
+    monkeypatch.delenv("ADMIN_IDS", raising=False)
+    allowed = FakeMessage("/stats")
+    await cmd_visit_stats(allowed, db)
+    assert "Статистика посещаемости" in allowed.sent[-1][0]
+
+    # задан чужой админ — доступ закрыт
+    monkeypatch.setenv("ADMIN_IDS", "999000")
+    denied = FakeMessage("/stats")
+    await cmd_visit_stats(denied, db)
+    assert "только администратору" in denied.sent[-1][0]
+    assert "Статистика посещаемости бота" not in denied.sent[-1][0]
+
+    # свой ID в списке — доступ открыт
+    monkeypatch.setenv("ADMIN_IDS", "424242")
+    owner = FakeMessage("/stats 30")
+    await cmd_visit_stats(owner, db)
+    assert "период графика: 30 дн." in owner.sent[-1][0]
+
+
+# =============================================================================
+# Приватный режим: резюме не хранится, только SHA-256 хэш + профиль
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_resume_text_is_not_stored_by_default(monkeypatch, db: Database) -> None:
+    """Тест 81: по умолчанию текст резюме в БД не сохраняется — только хэш и профиль."""
+    import hashlib
+
+    from bot.services.file_extractor import upload_and_register_resume
+
+    monkeypatch.delenv("STORE_RAW_RESUME", raising=False)
+
+    resume_text = (
+        "Коммерческий директор\nОпыт работы: 8 лет\nНавыки: P&L, продажи, B2B, CRM, переговоры\n"
+        "Управлял P&L 450 млн рублей, команда 25 человек."
+    )
+    saved = await upload_and_register_resume(
+        db=db, user_id=8101, raw_text=resume_text, file_name="cv.docx", username="ivan"
+    )
+
+    assert saved["raw_text"] == "", "исходный текст в базу не попал"
+    assert saved["extracted_role"], "должность извлечена"
+    assert saved["extracted_skills"], "навыки извлечены"
+    assert saved["raw_text_stored"] is False
+
+    expected_hash = hashlib.sha256(
+        " ".join(resume_text.replace("ё", "е").lower().split()).encode("utf-8")
+    ).hexdigest()
+    assert saved["resume_hash"] == expected_hash
+    assert len(saved["resume_hash"]) == 64
+
+    # в базе действительно нет текста
+    import aiosqlite
+
+    async with aiosqlite.connect(db.db_path) as raw:
+        cursor = await raw.execute(
+            "SELECT raw_text, resume_hash, extracted_role FROM users_resumes WHERE user_id = 8101"
+        )
+        row = await cursor.fetchone()
+    assert row[0] == ""
+    assert row[1] == expected_hash
+    assert row[2]
+
+    # повторная загрузка того же файла — тот же хэш, профиль обновлён, дублей нет
+    again = await upload_and_register_resume(
+        db=db, user_id=8101, raw_text=resume_text, file_name="cv.docx"
+    )
+    assert again["resume_hash"] == expected_hash
+    assert again["is_repeat_upload"] is True
+
+    async with aiosqlite.connect(db.db_path) as raw:
+        cursor = await raw.execute("SELECT COUNT(*) FROM users_resumes WHERE user_id = 8101")
+        assert (await cursor.fetchone())[0] == 1
+
+
+def test_resume_fingerprint_is_stable() -> None:
+    """Тест 82: хэш не зависит от регистра, ё/е и лишних пробелов; разные резюме различаются."""
+    from bot.services.file_extractor import resume_fingerprint, shorten_hash
+
+    base = resume_fingerprint("Коммерческий директор. Навыки: P&L, продажи")
+    variants = [
+        "коммерческий директор. навыки: p&l, продажи",
+        "Коммерческий   директор.\n\nНавыки:   P&L,  продажи",
+        "  Коммерческий директор. Навыки: P&L, продажи  ",
+    ]
+    for variant in variants:
+        assert resume_fingerprint(variant) == base
+
+    assert resume_fingerprint("Менеджер по продажам") != base
+    assert resume_fingerprint("ёлка") == resume_fingerprint("елка")
+    assert shorten_hash(base) == f"{base[:16]}…"
+
+
+@pytest.mark.asyncio
+async def test_purge_removes_previously_stored_texts(monkeypatch, db: Database) -> None:
+    """Тест 83: при старте в приватном режиме старые тексты заменяются на хэш."""
+    from bot.services.file_extractor import (
+        purge_stored_resume_texts,
+        resume_fingerprint,
+        upload_and_register_resume,
+    )
+
+    monkeypatch.setenv("STORE_RAW_RESUME", "1")
+    saved = await upload_and_register_resume(
+        db=db,
+        user_id=8301,
+        raw_text="Руководитель продукта. Навыки: SQL, A/B-тесты, roadmap. Опыт 8 лет.",
+        file_name="old.docx",
+    )
+    assert saved["raw_text"], "текст сохранён в режиме STORE_RAW_RESUME=1"
+
+    monkeypatch.delenv("STORE_RAW_RESUME", raising=False)
+    purged = await purge_stored_resume_texts(db)
+    assert purged >= 1
+
+    import aiosqlite
+
+    async with aiosqlite.connect(db.db_path) as raw:
+        cursor = await raw.execute(
+            "SELECT raw_text, resume_hash FROM users_resumes WHERE user_id = 8301"
+        )
+        raw_text, resume_hash = await cursor.fetchone()
+    assert raw_text == ""
+    assert resume_hash == resume_fingerprint(
+        "Руководитель продукта. Навыки: SQL, A/B-тесты, roadmap. Опыт 8 лет."
+    )
+
+
+@pytest.mark.asyncio
+async def test_my_resume_shows_hash_instead_of_text(monkeypatch, db: Database) -> None:
+    """Тест 84: /my_resume показывает профиль и хэш, а не фрагмент текста резюме."""
+    from bot.handlers.resume import cmd_my_resume
+    from bot.services.file_extractor import upload_and_register_resume
+
+    monkeypatch.delenv("STORE_RAW_RESUME", raising=False)
+    await upload_and_register_resume(
+        db=db,
+        user_id=8401,
+        raw_text="Коммерческий директор. Навыки: P&L, продажи, B2B. Опыт 8 лет, команда 25 человек.",
+        file_name="cv.pdf",
+    )
+
+    class FakeMessage:
+        def __init__(self) -> None:
+            self.sent: list = []
+
+            class _User:
+                id = 8401
+
+            self.from_user = _User()
+
+        async def answer(self, text, **kwargs):
+            self.sent.append((text, kwargs))
+            return self
+
+    message = FakeMessage()
+    await cmd_my_resume(message, db)
+    text = message.sent[-1][0]
+    assert "Текст резюме не хранится" in text
+    assert "SHA-256" in text
+    assert "Коммерческий директор" in text, "профиль по-прежнему виден"
+    assert "Опыт 8 лет, команда 25 человек" not in text, "фрагмента исходного текста нет"
+
+
+@pytest.mark.asyncio
+async def test_adaptation_and_reset_explain_missing_text(monkeypatch, db: Database) -> None:
+    """Тест 85: без сохранённого текста адаптация и /reset_profile честно объясняют причину."""
+    from bot.handlers.resume import cmd_reset_profile
+    from bot.services.file_extractor import upload_and_register_resume
+    from bot.services.market_standards import adapt_resume_to_market_standards
+
+    monkeypatch.delenv("STORE_RAW_RESUME", raising=False)
+    await upload_and_register_resume(
+        db=db,
+        user_id=8501,
+        raw_text="Коммерческий директор. Навыки: P&L, продажи, B2B. Опыт 8 лет, команда 25 человек.",
+    )
+
+    with pytest.raises(ValueError) as exc:
+        await adapt_resume_to_market_standards(db=db, user_id=8501)
+    assert "не хранится" in str(exc.value)
+
+    class FakeMessage:
+        def __init__(self) -> None:
+            self.sent: list = []
+
+            class _User:
+                id = 8501
+
+            self.from_user = _User()
+
+        async def answer(self, text, **kwargs):
+            self.sent.append((text, kwargs))
+            return self
+
+    message = FakeMessage()
+    await cmd_reset_profile(message, db)
+    assert "не хранится" in message.sent[-1][0]
+    assert "/set_role" in message.sent[-1][0]

@@ -148,6 +148,14 @@ def check_code_and_routers() -> None:
         "bot.handlers.sources",
         "bot.handlers.search",
         "bot.handlers.resources",
+        "bot.handlers.stats",
+        "bot.middlewares",
+        "bot.middlewares.visits",
+        "bot.services.visits",
+        "bot.services.text_cleanup",
+        "bot.services.source_scopes",
+        "bot.services.vacancy_dedup",
+        "bot.services.llm_client",
         "bot.services.file_extractor",
         "bot.services.market_standards",
         "bot.services.source_manager",
@@ -191,7 +199,14 @@ def check_startup_sequence() -> None:
             bot = Bot(token=fake_token)
             dp = Dispatcher(storage=MemoryStorage())
             dp["db"] = db
+            from bot.middlewares import VisitCounterMiddleware
+
+            visit_counter = VisitCounterMiddleware(db=db)
+            dp.message.middleware(visit_counter)
+            dp.callback_query.middleware(visit_counter)
             register_all_routers(dp)
+            assert len(list(dp.message.middleware)) > 0, "счётчик посещаемости не подключён"
+            assert len(list(dp.callback_query.middleware)) > 0, "счётчик посещаемости не подключён"
             handlers = sum(len(router.message.handlers) for router in dp.sub_routers)
             callbacks = sum(len(router.callback_query.handlers) for router in dp.sub_routers)
 

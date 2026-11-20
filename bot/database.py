@@ -1116,6 +1116,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS users_resumes (
                     user_id INTEGER PRIMARY KEY,
                     username TEXT,
+                    resume_hash TEXT,
                     raw_text TEXT NOT NULL,
                     adapted_text TEXT,
                     extracted_role TEXT,
@@ -1130,6 +1131,9 @@ class Database:
             await self._ensure_column(
                 db, "users_resumes", "profile_edited_manually", "INTEGER NOT NULL DEFAULT 0"
             )
+            # Догоняем схему для баз, созданных до появления хранения хэша резюме
+            await self._ensure_column(db, "users_resumes", "resume_hash", "TEXT")
+
             await db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS market_standards (
@@ -1157,6 +1161,36 @@ class Database:
                 )
                 """
             )
+
+            # Счётчик посещаемости: одна строка на пользователя в сутки.
+            # visit_date — календарная дата в часовом поясе отчёта (по умолчанию Europe/Moscow).
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS visits (
+                    user_id INTEGER NOT NULL,
+                    visit_date TEXT NOT NULL,
+                    events INTEGER NOT NULL DEFAULT 0,
+                    first_seen_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL,
+                    username TEXT,
+                    PRIMARY KEY (user_id, visit_date)
+                )
+                """
+            )
+            # Счётчик действий по функциям бота: одна строка на функцию в сутки.
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS visit_actions (
+                    action TEXT NOT NULL,
+                    action_date TEXT NOT NULL,
+                    events INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (action, action_date)
+                )
+                """
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_visits_date ON visits(visit_date)"
+            )
             await db.commit()
 
             # Предзаполняем стартовые источники, если таблица пуста
@@ -1181,6 +1215,103 @@ class Database:
                         ),
                     )
                 await db.commit()
+
+    # =========================================================================
+    # Счётчик посещаемости (заходы пользователей + действия по функциям)
+    # =========================================================================
+
+    async def record_visit(
+        self,
+        user_id: int,
+        visit_date: str,
+        timestamp: str,
+        username: str = "",
+        action: str = "",
+    ) -> None:
+        """Отмечает один заход пользователя и (опционально) действие по функции.
+
+        Оба счётчика пишутся в одном соединении и одной транзакции — вызывается
+        на каждое событие от пользователя, поэтому лишние подключения к SQLite
+        здесь не нужны.
+
+        ``visit_date`` — дата в часовом поясе отчёта (YYYY-MM-DD), ``timestamp`` — ISO-время события.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO visits (user_id, visit_date, events, first_seen_at, last_seen_at, username)
+                VALUES (?, ?, 1, ?, ?, ?)
+                ON CONFLICT(user_id, visit_date) DO UPDATE SET
+                    events = events + 1,
+                    last_seen_at = excluded.last_seen_at,
+                    username = COALESCE(NULLIF(excluded.username, ''), visits.username)
+                """,
+                (user_id, visit_date, timestamp, timestamp, username or None),
+            )
+            if action:
+                await db.execute(
+                    """
+                    INSERT INTO visit_actions (action, action_date, events)
+                    VALUES (?, ?, 1)
+                    ON CONFLICT(action, action_date) DO UPDATE SET events = events + 1
+                    """,
+                    (action, visit_date),
+                )
+            await db.commit()
+
+    async def record_visit_action(self, action: str, action_date: str) -> None:
+        """Учитывает одно действие пользователя в разрезе функции бота и даты."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO visit_actions (action, action_date, events)
+                VALUES (?, ?, 1)
+                ON CONFLICT(action, action_date) DO UPDATE SET events = events + 1
+                """,
+                (action, action_date),
+            )
+            await db.commit()
+
+    async def get_visits_rows(self, since_date: str) -> List[Any]:
+        """Строки счётчика посещаемости начиная с даты ``since_date`` (YYYY-MM-DD)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                SELECT user_id, visit_date, events, first_seen_at, last_seen_at, username
+                FROM visits
+                WHERE visit_date >= ?
+                ORDER BY visit_date
+                """,
+                (since_date,),
+            )
+            return list(await cursor.fetchall())
+
+    async def get_visit_action_rows(self, since_date: str) -> List[Any]:
+        """Агрегированные действия по функциям начиная с даты ``since_date``."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                SELECT action, SUM(events) AS total
+                FROM visit_actions
+                WHERE action_date >= ?
+                GROUP BY action
+                ORDER BY total DESC
+                """,
+                (since_date,),
+            )
+            return list(await cursor.fetchall())
+
+    async def get_first_seen_dates(self) -> List[Any]:
+        """Первый день каждого пользователя (для подсчёта «новых»)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                SELECT user_id, MIN(visit_date) AS first_date
+                FROM visits
+                GROUP BY user_id
+                """
+            )
+            return list(await cursor.fetchall())
 
     async def ensure_default_sources(self) -> int:
         """Добавляет отсутствующие источники по умолчанию в уже существующую базу.
@@ -1236,18 +1367,25 @@ class Database:
         extracted_skills: List[str],
         file_name: str = "text_input",
         username: Optional[str] = None,
+        resume_hash: str = "",
     ) -> Dict[str, Any]:
-        """Сохраняет или обновляет резюме пользователя в БД."""
+        """Сохраняет или обновляет резюме пользователя в БД.
+
+        ``raw_text`` может быть пустым: по умолчанию бот текст резюме **не хранит** —
+        в базе остаются профиль (должность, навыки) и ``resume_hash`` (SHA-256 текста).
+        """
         now_iso = datetime.now(timezone.utc).isoformat()
         skills_json = json.dumps(extracted_skills, ensure_ascii=False)
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
                 INSERT INTO users_resumes
-                (user_id, username, raw_text, adapted_text, extracted_role, extracted_skills, file_name, updated_at)
-                VALUES (?, ?, ?, NULL, ?, ?, ?, ?)
+                (user_id, username, resume_hash, raw_text, adapted_text, extracted_role,
+                 extracted_skills, file_name, updated_at)
+                VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
                     username = excluded.username,
+                    resume_hash = excluded.resume_hash,
                     raw_text = excluded.raw_text,
                     adapted_text = NULL,
                     extracted_role = excluded.extracted_role,
@@ -1258,7 +1396,8 @@ class Database:
                 (
                     user_id,
                     username or "",
-                    raw_text,
+                    resume_hash or "",
+                    raw_text or "",
                     extracted_role,
                     skills_json,
                     file_name,
@@ -1267,6 +1406,23 @@ class Database:
             )
             await db.commit()
         return await self.get_resume(user_id)  # type: ignore
+
+    async def list_resumes_with_text(self) -> List[Any]:
+        """Строки резюме, где ещё лежит исходный текст (для разовой очистки по настройке)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT user_id, raw_text, COALESCE(resume_hash, '') FROM users_resumes WHERE raw_text <> ''"
+            )
+            return list(await cursor.fetchall())
+
+    async def wipe_resume_text(self, user_id: int, resume_hash: str) -> None:
+        """Удаляет текст резюме, оставляя только отпечаток (SHA-256)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE users_resumes SET raw_text = '', resume_hash = ? WHERE user_id = ?",
+                (resume_hash, user_id),
+            )
+            await db.commit()
 
     async def save_adapted_resume(self, user_id: int, adapted_text: str) -> None:
         """Сохраняет адаптированную под стандарты рынка версию резюме."""

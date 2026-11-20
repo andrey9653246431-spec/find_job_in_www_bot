@@ -20,6 +20,7 @@ from bot.keyboards import (
 from bot.services.file_extractor import (
     build_resume_profile,
     extract_text_from_file_bytes,
+    shorten_hash,
     upload_and_register_resume,
 )
 from bot.services.market_standards import adapt_resume_to_market_standards
@@ -63,6 +64,21 @@ def _profile_report(record: dict) -> str:
         "**«Изменить навыки»** — поиск пойдёт уже по исправленному профилю."
     )
     return f"{role_line}\n{skills_line}{hint_block}{edit_hint}"
+
+
+def _storage_report(record: dict) -> str:
+    """Строка о приватности: что именно осталось в базе вместо текста резюме."""
+    resume_hash = record.get("resume_hash") or ""
+    if record.get("raw_text"):
+        return (
+            f"🔐 **Хэш резюме (SHA-256):** `{shorten_hash(resume_hash)}`\n"
+            "_Текст резюме хранится в базе — режим `STORE_RAW_RESUME=1`._"
+        )
+    return (
+        f"🔐 **Хэш резюме (SHA-256):** `{shorten_hash(resume_hash)}`\n"
+        "_Сам текст резюме в базе **не хранится**: остались только должность, навыки и этот хэш. "
+        "Поиск вакансий работает по профилю._"
+    )
 
 # =============================================================================
 # 1. ОТДЕЛЬНАЯ ФУНКЦИЯ ЗАГРУЗКИ РЕЗЮМЕ
@@ -113,10 +129,17 @@ async def handle_resume_document(
         )
         await state.clear()
 
+        repeat_note = (
+            "♻️ _Это резюме уже загружалось — профиль обновлён, дубль не создан._\n\n"
+            if saved.get("is_repeat_upload")
+            else ""
+        )
         await status_msg.edit_text(
-            "✅ **Резюме успешно загружено и сохранено в базе!**\n\n"
-            f"📁 **Файл:** `{file_name}`\n"
+            "✅ **Резюме обработано!**\n\n"
+            + repeat_note
+            + f"📁 **Файл:** `{file_name}`\n"
             + _profile_report(saved)
+            + "\n" + _storage_report(saved)
             + "\n\nЧто сделаем дальше?",
             reply_markup=get_after_upload_keyboard(),
             parse_mode="Markdown",
@@ -163,9 +186,16 @@ async def handle_resume_text(
         )
         await state.clear()
 
+        repeat_note = (
+            "♻️ _Это резюме уже загружалось — профиль обновлён, дубль не создан._\n\n"
+            if saved.get("is_repeat_upload")
+            else ""
+        )
         await message.answer(
-            "✅ **Текст резюме успешно загружен и проанализирован!**\n\n"
+            "✅ **Текст резюме обработан!**\n\n"
+            + repeat_note
             + _profile_report(saved)
+            + "\n" + _storage_report(saved)
             + "\n\nВыберите следующее действие:",
             reply_markup=get_after_upload_keyboard(),
             parse_mode="Markdown",
@@ -327,14 +357,25 @@ async def cmd_my_resume(message: Message, db: Database) -> None:
         has_adapted = "Ещё не выполнялась (нажмите «✨ Адаптировать резюме»)"
     else:
         has_adapted = "Ещё не выполнялась"
-    preview = record["raw_text"][:700] + ("..." if len(record["raw_text"]) > 700 else "")
+    raw_text = record.get("raw_text") or ""
+    if raw_text:
+        preview_block = f"**Фрагмент исходного текста:**\n```\n{raw_text[:700]}{'...' if len(raw_text) > 700 else ''}\n```"
+    else:
+        preview_block = (
+            "🔐 **Текст резюме не хранится.** В базе остались только профиль "
+            "(должность и навыки) и SHA-256 хэш документа — этого достаточно для поиска вакансий.\n"
+            "Пересобрать профиль из текста нельзя: если он распознан неверно, "
+            "поправьте его кнопками **«Изменить должность»** / **«Изменить навыки»** "
+            "или загрузите резюме заново."
+        )
 
     await message.answer(
         "📄 **Ваш профиль резюме в базе:**\n\n"
         + _profile_report(record)
         + f"\n📁 **Источник:** `{record.get('file_name')}`\n"
+        + _storage_report(record) + "\n"
         f"✨ **Адаптация под стандарты рынка:** {has_adapted}\n\n"
-        f"**Фрагмент исходного текста:**\n```\n{preview}\n```",
+        + preview_block,
         reply_markup=get_after_upload_keyboard(),
         parse_mode="Markdown",
     )
@@ -628,7 +669,19 @@ async def cmd_reset_profile(message: Message, db: Database) -> None:
         await message.answer("ℹ️ Резюме пока не загружено.")
         return
 
-    profile = build_resume_profile(record["raw_text"])
+    raw_text = record.get("raw_text") or ""
+    if not raw_text:
+        await message.answer(
+            "🔐 **Текст резюме в базе не хранится**, поэтому пересобрать профиль автоматически нельзя.\n\n"
+            "Что можно сделать:\n"
+            "• поправить должность: `/set_role Коммерческий директор`\n"
+            "• поправить навыки: `/set_skills P&L, продажи, CRM`\n"
+            "• или загрузить резюме заново — профиль пересоберётся из нового файла.",
+            parse_mode="Markdown",
+        )
+        return
+
+    profile = build_resume_profile(raw_text)
     updated = await db.update_resume_profile(
         user_id=message.from_user.id,  # type: ignore
         role=profile["role"],

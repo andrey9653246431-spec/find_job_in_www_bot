@@ -1,11 +1,13 @@
 """Отдельный модуль загрузки резюме, извлечения текста из файлов (PDF, DOCX, TXT)
 и первичного анализа профиля кандидата (целевая роль и ключевые навыки).
 """
+import hashlib
 import io
 import re
 from typing import Any, Dict, List, Optional, Tuple
 from docx import Document
 from pypdf import PdfReader
+from bot.config import raw_resume_storage_enabled
 from bot.database import Database
 
 # Словарь популярных навыков и ключевых слов для автоматического профилирования резюме
@@ -563,19 +565,56 @@ def build_resume_profile(resume_text: str) -> Dict[str, Any]:
     }
 
 
+def resume_fingerprint(raw_text: str) -> str:
+    """SHA-256 отпечаток резюме: идентификатор документа без хранения его текста.
+
+    Текст перед хэшированием нормализуется (регистр, ё → е, любые пробелы → один),
+    поэтому один и тот же файл, отправленный повторно, даёт тот же хэш.
+    """
+    normalized = " ".join(
+        (raw_text or "").replace("ё", "е").replace("Ё", "Е").lower().split()
+    )
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def shorten_hash(resume_hash: str, length: int = 16) -> str:
+    """Короткая форма хэша для сообщений в чате."""
+    value = (resume_hash or "").strip()
+    return f"{value[:length]}…" if len(value) > length else value
+
+
+async def purge_stored_resume_texts(db: Database) -> int:
+    """Удаляет из БД все сохранённые тексты резюме, оставляя только SHA-256.
+
+    Вызывается при старте, когда хранение текста отключено (по умолчанию), —
+    так очищаются и те резюме, что были загружены до появления приватного режима.
+    Возвращает количество очищенных записей.
+    """
+    rows = await db.list_resumes_with_text()
+    purged = 0
+    for user_id, raw_text, _existing_hash in rows:
+        await db.wipe_resume_text(int(user_id), resume_fingerprint(raw_text or ""))
+        purged += 1
+    return purged
+
+
 async def upload_and_register_resume(
     db: Database,
     user_id: int,
     raw_text: str,
     file_name: str = "text_input",
     username: str = "",
+    store_raw: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Отдельная функция загрузки резюме в бота.
 
     1. Принимает извлечённый текст резюме.
-    2. Определяет целевую должность и список ключевых навыков/тегов.
-    3. Сохраняет резюме в базу данных SQLite.
-    4. Возвращает профиль загруженного резюме.
+    2. Считает SHA-256 отпечаток резюме.
+    3. Определяет целевую должность и список ключевых навыков/тегов.
+    4. Сохраняет в базу только профиль и отпечаток — **без исходного текста**
+       (если не включено ``STORE_RAW_RESUME=1``).
+    5. Возвращает профиль загруженного резюме + ``resume_hash``, ``raw_text_stored``
+       и ``is_repeat_upload`` (этот же файл уже загружали).
     """
     cleaned_text = raw_text.strip()
     if len(cleaned_text) < 20:
@@ -584,19 +623,30 @@ async def upload_and_register_resume(
             "Пожалуйста, отправьте полное резюме."
         )
 
+    resume_hash = resume_fingerprint(cleaned_text)
+    keep_text = raw_resume_storage_enabled() if store_raw is None else bool(store_raw)
+
     # ФИО никогда не подставляется вместо должности: если должность не найдена,
     # сохраняем пустую строку и просим пользователя указать её вручную (/set_role).
     extracted_role = extract_role_from_resume(cleaned_text)
     extracted_skills = extract_skills_from_resume(cleaned_text)
 
+    previous = await db.get_resume(user_id)
+    is_repeat_upload = bool(previous and previous.get("resume_hash") == resume_hash)
+
     saved_record = await db.save_resume(
         user_id=user_id,
-        raw_text=cleaned_text,
+        raw_text=cleaned_text if keep_text else "",
         extracted_role=extracted_role,
         extracted_skills=extracted_skills,
         file_name=file_name,
         username=username,
+        resume_hash=resume_hash,
     )
+    saved_record = dict(saved_record or {})
+    saved_record["resume_hash"] = resume_hash
+    saved_record["raw_text_stored"] = keep_text
+    saved_record["is_repeat_upload"] = is_repeat_upload
     return saved_record
 
 
@@ -682,6 +732,10 @@ async def repair_invalid_resume_profiles(db: Database) -> int:
         # Профиль, который человек поправил кнопками «Изменить должность/навыки»,
         # автоматика не перезаписывает — иначе правка «слетит» после рестарта.
         if record.get("profile_edited_manually"):
+            continue
+
+        # Текст резюме может не храниться (приватный режим) — чинить не из чего
+        if not (record.get("raw_text") or "").strip():
             continue
 
         role = record.get("extracted_role") or ""
