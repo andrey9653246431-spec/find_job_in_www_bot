@@ -26,6 +26,17 @@ class Config:
     llm_provider: str = os.getenv("LLM_PROVIDER", "")
     llm_order: str = os.getenv("LLM_ORDER", "")
 
+    # Показывать ли в меню функцию «✨ Адаптировать резюме».
+    # По умолчанию СКРЫТА: кнопки нет в главном меню и в клавиатуре после загрузки,
+    # /adapt_resume не публикуется в меню команд и отвечает уведомлением.
+    # Включить обратно: SHOW_ADAPT_RESUME_UI=1.
+    show_adapt_resume_ui: bool = os.getenv("SHOW_ADAPT_RESUME_UI", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
     # Показывать ли в меню блок «идеальное резюме» (Золотой стандарт + пример Executive CV).
     # По умолчанию СКРЫТ: пункты не отображаются в меню и команды /gold_standard,
     # /example_cv отвечают коротким уведомлением. Включить обратно: SHOW_IDEAL_RESUME_UI=1.
@@ -51,6 +62,23 @@ def ideal_resume_ui_enabled() -> bool:
     без перезапуска кода (в тестах и при отладке это удобно).
     """
     return os.getenv("SHOW_IDEAL_RESUME_UI", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def adapt_resume_ui_enabled() -> bool:
+    """Включена ли функция «✨ Адаптировать резюме» (кнопки меню + /adapt_resume).
+
+    Читает переменную окружения при каждом вызове — флаг можно переключать
+    без перезапуска кода.
+    """
+    return os.getenv("SHOW_ADAPT_RESUME_UI", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+ADAPT_RESUME_DISABLED_TEXT = (
+    "🙈 **Адаптация резюме скрыта.**\n\n"
+    "Функция «✨ Адаптировать резюме» отключена в меню.\n\n"
+    "Доступные действия: **📤 Загрузить резюме**, **📐 Стандарты рынка**, "
+    "**🔍 Поиск вакансий**, **📄 Моё резюме**."
+)
 
 
 IDEAL_RESUME_DISABLED_TEXT = (

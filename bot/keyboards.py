@@ -8,33 +8,43 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
-from bot.config import ideal_resume_ui_enabled
+from bot.config import adapt_resume_ui_enabled, ideal_resume_ui_enabled
 
 
 def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
     """Главное меню бота с отдельными кнопками под каждую функцию ТЗ.
 
-    Пункты про «идеальное резюме» (Золотой стандарт, пример Executive CV)
-    скрыты по умолчанию; вернуть их можно переменной ``SHOW_IDEAL_RESUME_UI=1``.
+    Скрыты по умолчанию:
+    - «✨ Адаптировать резюме» — возвращается переменной ``SHOW_ADAPT_RESUME_UI=1``;
+    - блок «идеальное резюме» (кнопка примера Executive CV) — ``SHOW_IDEAL_RESUME_UI=1``.
+    Раскладка кнопок подстраивается, чтобы не оставалось одиноких рядов.
     """
-    rows = [
-        [
-            KeyboardButton(text="📤 Загрузить резюме"),
-            KeyboardButton(text="✨ Адаптировать резюме"),
-        ],
-        [
-            KeyboardButton(text="📐 Стандарты рынка"),
-            KeyboardButton(text="🔍 Поиск вакансий"),
-        ],
-        [
-            KeyboardButton(text="🌐 Источники вакансий"),
-            KeyboardButton(text="📄 Моё резюме"),
-        ],
-    ]
-    last_row = [KeyboardButton(text="🧭 Найти каналы и сайты")]
-    if ideal_resume_ui_enabled():
-        last_row.insert(0, KeyboardButton(text="🏛 Пример идеального резюме"))
-    rows.append(last_row)
+    show_adapt = adapt_resume_ui_enabled()
+    show_ideal = ideal_resume_ui_enabled()
+
+    upload = KeyboardButton(text="📤 Загрузить резюме")
+    my_resume = KeyboardButton(text="📄 Моё резюме")
+    standards = KeyboardButton(text="📐 Стандарты рынка")
+    search = KeyboardButton(text="🔍 Поиск вакансий")
+    sources = KeyboardButton(text="🌐 Источники вакансий")
+    find_channels = KeyboardButton(text="🧭 Найти каналы и сайты")
+
+    if show_adapt:
+        rows = [
+            [upload, KeyboardButton(text="✨ Адаптировать резюме")],
+            [standards, search],
+            [sources, my_resume],
+            [find_channels],
+        ]
+    else:
+        rows = [
+            [upload, my_resume],
+            [standards, search],
+            [sources, find_channels],
+        ]
+
+    if show_ideal:
+        rows[-1].insert(0, KeyboardButton(text="🏛 Пример идеального резюме"))
 
     return ReplyKeyboardMarkup(
         keyboard=rows,
@@ -243,12 +253,18 @@ def get_after_upload_keyboard() -> InlineKeyboardMarkup:
                     callback_data="profile_edit:skills",
                 ),
             ],
-            [
-                InlineKeyboardButton(
-                    text="✨ Адаптировать под стандарты рынка",
-                    callback_data="quick_action:adapt",
-                )
-            ],
+            *(
+                [
+                    [
+                        InlineKeyboardButton(
+                            text="✨ Адаптировать под стандарты рынка",
+                            callback_data="quick_action:adapt",
+                        )
+                    ]
+                ]
+                if adapt_resume_ui_enabled()
+                else []
+            ),
             [
                 InlineKeyboardButton(
                     text="📐 Настроить стандарты рынка",

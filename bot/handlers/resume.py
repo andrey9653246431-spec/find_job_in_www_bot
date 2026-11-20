@@ -10,6 +10,7 @@ from aiogram import Bot, F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
+from bot.config import ADAPT_RESUME_DISABLED_TEXT, adapt_resume_ui_enabled
 from bot.database import Database
 from bot.keyboards import (
     get_after_upload_keyboard,
@@ -275,6 +276,9 @@ async def _run_adaptation_flow(message: Message, user_id: int, db: Database) -> 
 @router.message(F.text == "✨ Адаптировать резюме")
 async def cmd_adapt_resume(message: Message, db: Database) -> None:
     """Запуск отдельной функции адаптации резюме из главного меню или по команде."""
+    if not adapt_resume_ui_enabled():
+        await message.answer(ADAPT_RESUME_DISABLED_TEXT, parse_mode="Markdown")
+        return
     await _run_adaptation_flow(
         message=message,
         user_id=message.from_user.id,  # type: ignore
@@ -286,6 +290,12 @@ async def cmd_adapt_resume(message: Message, db: Database) -> None:
 async def cb_quick_adapt_resume(callback: CallbackQuery, db: Database) -> None:
     """Быстрый запуск адаптации резюме по inline-кнопке после загрузки."""
     await callback.answer()
+    if not adapt_resume_ui_enabled():
+        if callback.message:
+            await callback.message.answer(  # type: ignore[union-attr]
+                ADAPT_RESUME_DISABLED_TEXT, parse_mode="Markdown"
+            )
+        return
     if callback.message:
         await _run_adaptation_flow(
             message=callback.message,  # type: ignore
@@ -311,7 +321,12 @@ async def cmd_my_resume(message: Message, db: Database) -> None:
         )
         return
 
-    has_adapted = "Да ✅" if record.get("adapted_text") else "Ещё не выполнялась (нажмите «✨ Адаптировать резюме»)"
+    if record.get("adapted_text"):
+        has_adapted = "Да ✅"
+    elif adapt_resume_ui_enabled():
+        has_adapted = "Ещё не выполнялась (нажмите «✨ Адаптировать резюме»)"
+    else:
+        has_adapted = "Ещё не выполнялась"
     preview = record["raw_text"][:700] + ("..." if len(record["raw_text"]) > 700 else "")
 
     await message.answer(

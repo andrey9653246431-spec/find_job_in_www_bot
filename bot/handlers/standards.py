@@ -10,7 +10,11 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
-from bot.config import IDEAL_RESUME_DISABLED_TEXT, ideal_resume_ui_enabled
+from bot.config import (
+    IDEAL_RESUME_DISABLED_TEXT,
+    adapt_resume_ui_enabled,
+    ideal_resume_ui_enabled,
+)
 from bot.database import Database
 from bot.keyboards import get_standards_keyboard
 from bot.services.market_standards import (
@@ -255,7 +259,11 @@ async def handle_custom_standards_text(
     await message.answer(
         "✅ **Ваши пользовательские стандарты рынка успешно сохранены внутри бота!**\n\n"
         + _format_standards_info(updated)
-        + "\n\nТеперь нажмите **✨ Адаптировать резюме**, чтобы применить эти стандарты.",
+        + (
+            "\n\nТеперь нажмите **✨ Адаптировать резюме**, чтобы применить эти стандарты."
+            if adapt_resume_ui_enabled()
+            else "\n\nЭти стандарты будут применены при следующей адаптации резюме."
+        ),
         reply_markup=get_standards_keyboard(),
         parse_mode="Markdown",
     )

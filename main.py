@@ -5,7 +5,7 @@ import sys
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand
-from bot.config import config, ideal_resume_ui_enabled
+from bot.config import adapt_resume_ui_enabled, config, ideal_resume_ui_enabled
 from bot.database import Database
 from bot.handlers import register_all_routers
 from bot.services.file_extractor import repair_invalid_resume_profiles
@@ -18,7 +18,6 @@ async def setup_bot_commands(bot: Bot) -> None:
         BotCommand(command="upload_resume", description="📤 Загрузить резюме (PDF, DOCX, TXT, текст)"),
         BotCommand(command="find_resources", description="🧭 Каналы, агрегаторы и карьерные страницы"),
         BotCommand(command="standards", description="📐 Задать стандарты рынка внутри бота"),
-        BotCommand(command="adapt_resume", description="✨ Адаптировать резюме под стандарты рынка"),
         BotCommand(command="search", description="🔍 Поиск вакансий: ТГ / сайты / карьерные страницы + период"),
         BotCommand(command="sources", description="🌐 База источников (сайты и ТГ-каналы)"),
         BotCommand(command="add_source", description="➕ Добавить новый сайт или ТГ-канал"),
@@ -28,6 +27,14 @@ async def setup_bot_commands(bot: Bot) -> None:
         BotCommand(command="reset_profile", description="🔄 Пересобрать профиль из резюме"),
         BotCommand(command="help", description="📖 Справка по функциям"),
     ]
+    if adapt_resume_ui_enabled():
+        commands.insert(
+            2,
+            BotCommand(
+                command="adapt_resume",
+                description="✨ Адаптировать резюме под стандарты рынка",
+            ),
+        )
     if ideal_resume_ui_enabled():
         # Блок «идеальное резюме» скрыт по умолчанию — команды не показываем в меню Telegram
         commands[2:2] = [

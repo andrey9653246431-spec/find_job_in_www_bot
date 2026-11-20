@@ -2755,3 +2755,110 @@ def test_career_page_parser_extracts_jsonld_and_links() -> None:
     assert "https://job.ozon.ru/vacancy/1" in urls, "ссылка-вакансия найдена"
     assert "Все вакансии" not in titles and "О компании" not in titles, "навигация отфильтрована"
     assert all(v["source_type"] == "career" for v in vacancies)
+
+
+# =============================================================================
+# Скрытая функция «✨ Адаптировать резюме» (SHOW_ADAPT_RESUME_UI)
+# =============================================================================
+
+def test_adapt_resume_hidden_from_menu_by_default(monkeypatch) -> None:
+    """Тест 72: по умолчанию кнопки адаптации нет ни в главном меню, ни после загрузки."""
+    monkeypatch.delenv("SHOW_ADAPT_RESUME_UI", raising=False)
+    from bot.keyboards import get_after_upload_keyboard, get_main_menu_keyboard
+
+    menu = [b.text for row in get_main_menu_keyboard().keyboard for b in row]
+    assert "✨ Адаптировать резюме" not in menu
+    # остальные функции на месте
+    for title in ("📤 Загрузить резюме", "📄 Моё резюме", "📐 Стандарты рынка",
+                  "🔍 Поиск вакансий", "🌐 Источники вакансий", "🧭 Найти каналы и сайты"):
+        assert title in menu
+    rows_with_one = [row for row in get_main_menu_keyboard().keyboard if len(row) == 1]
+    assert rows_with_one == [], "одиноких кнопок в ряду быть не должно"
+
+    after = [b.text for row in get_after_upload_keyboard().inline_keyboard for b in row]
+    assert not any("Адаптировать" in text for text in after)
+    assert "🔍 Искать вакансии (1 день / 1 нед / 1 мес)" in after
+
+
+def test_adapt_resume_returns_with_flag(monkeypatch) -> None:
+    """Тест 73: SHOW_ADAPT_RESUME_UI=1 возвращает кнопки адаптации в меню и после загрузки."""
+    monkeypatch.setenv("SHOW_ADAPT_RESUME_UI", "1")
+    from bot.keyboards import get_after_upload_keyboard, get_main_menu_keyboard
+
+    menu = [b.text for row in get_main_menu_keyboard().keyboard for b in row]
+    assert "✨ Адаптировать резюме" in menu
+    after = [b.text for row in get_after_upload_keyboard().inline_keyboard for b in row]
+    assert "✨ Адаптировать под стандарты рынка" in after
+
+
+@pytest.mark.asyncio
+async def test_adapt_resume_command_is_disabled(monkeypatch, db: Database) -> None:
+    """Тест 74: /adapt_resume и кнопка quick_action:adapt отвечают уведомлением, а не адаптируют."""
+    from bot.handlers.resume import cb_quick_adapt_resume, cmd_adapt_resume
+
+    monkeypatch.delenv("SHOW_ADAPT_RESUME_UI", raising=False)
+
+    class FakeMessage:
+        def __init__(self) -> None:
+            self.sent: list = []
+            self.documents: list = []
+
+        async def answer(self, text, **kwargs):
+            self.sent.append((text, kwargs))
+            return self
+
+        async def edit_text(self, text, **kwargs):
+            self.sent.append((text, kwargs))
+            return self
+
+        async def answer_document(self, **kwargs):
+            self.documents.append(kwargs)
+            return self
+
+    class FakeCallback:
+        data = "quick_action:adapt"
+
+        def __init__(self, message) -> None:
+            self.message = message
+
+            class _User:
+                id = 750
+
+            self.from_user = _User()
+
+        async def answer(self, *args, **kwargs):
+            return None
+
+    message = FakeMessage()
+    await cmd_adapt_resume(message, db)
+    assert "скрыта" in message.sent[-1][0]
+    assert message.documents == [], "файл не отправляется"
+
+    callback_message = FakeMessage()
+    await cb_quick_adapt_resume(FakeCallback(callback_message), db)
+    assert "скрыта" in callback_message.sent[-1][0]
+    assert callback_message.documents == []
+
+
+@pytest.mark.asyncio
+async def test_telegram_command_menu_hides_adapt_resume(monkeypatch) -> None:
+    """Тест 75: /adapt_resume не публикуется в меню команд Telegram, пока функция скрыта."""
+    from main import setup_bot_commands
+
+    class FakeBot:
+        def __init__(self) -> None:
+            self.commands: list = []
+
+        async def set_my_commands(self, commands):
+            self.commands = [c.command for c in commands]
+
+    monkeypatch.delenv("SHOW_ADAPT_RESUME_UI", raising=False)
+    bot = FakeBot()
+    await setup_bot_commands(bot)
+    assert "adapt_resume" not in bot.commands
+    assert "upload_resume" in bot.commands and "search" in bot.commands
+
+    monkeypatch.setenv("SHOW_ADAPT_RESUME_UI", "1")
+    bot_on = FakeBot()
+    await setup_bot_commands(bot_on)
+    assert "adapt_resume" in bot_on.commands
