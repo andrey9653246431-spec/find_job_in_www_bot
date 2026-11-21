@@ -127,6 +127,8 @@ jobs:
           DB_PATH: data/bot_database.sqlite3
           HTTP_TIMEOUT: "15"
           MAX_VACANCIES_PER_MESSAGE: "10"
+          ADMIN_IDS: ${{ secrets.ADMIN_IDS }}
+          STATS_TZ: ${{ vars.STATS_TZ || 'Europe/Moscow' }}
           # Сессия по умолчанию 120 мин, отдельный job ограничен 355 мин
           BOT_MAX_RUNTIME_MINUTES: ${{ inputs.run_duration_minutes || '120' }}
           BOT_RESTART_DELAY_SECONDS: "5"
