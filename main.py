@@ -189,8 +189,8 @@ async def main() -> None:
     # Счётчик посещаемости: считает любой заход (сообщение, команда, кнопка).
     # Ошибка записи в лог-файл статистики не ломает обработку события.
     visit_counter = VisitCounterMiddleware(db=db)
-    dp.message.middleware(visit_counter)
-    dp.callback_query.middleware(visit_counter)
+    dp.message.outer_middleware(visit_counter)
+    dp.callback_query.outer_middleware(visit_counter)
 
     register_all_routers(dp)
 

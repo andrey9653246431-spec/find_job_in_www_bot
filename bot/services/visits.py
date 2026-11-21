@@ -125,7 +125,10 @@ async def collect_visit_stats(
             (day, len(bucket["users"]) if bucket else 0, bucket["events"] if bucket else 0)
         )
 
-    last_7 = [users for _day, users, _events in series[-7:]]
+    last_7 = [
+        len(daily.get((today - timedelta(days=offset)).isoformat(), {}).get("users", set()))
+        for offset in range(7)
+    ]
     average_7 = (sum(last_7) / len(last_7)) if last_7 else 0.0
 
     return {

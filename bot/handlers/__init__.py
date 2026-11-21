@@ -12,9 +12,10 @@ from bot.handlers.stats import router as stats_router
 def register_all_routers(dp: Dispatcher) -> None:
     """Подключает модульные роутеры к корневому диспетчеру."""
     dp.include_router(common_router)
+    # Глобальная команда: FSM-ввод не должен принимать /stats за резюме/навыки.
+    dp.include_router(stats_router)
     dp.include_router(resume_router)
     dp.include_router(standards_router)
     dp.include_router(sources_router)
     dp.include_router(search_router)
     dp.include_router(resources_router)
-    dp.include_router(stats_router)

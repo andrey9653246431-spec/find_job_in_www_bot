@@ -3434,3 +3434,61 @@ def test_workflow_does_not_interrupt_database_save():
     heartbeat = next(step for step in steps if step['name'].startswith('Heartbeat'))
     assert 'git worktree add' in heartbeat['run']
     assert 'HEAD:main' in heartbeat['run']
+
+
+@pytest.mark.asyncio
+async def test_stats_routes_before_fsm_and_counts_unhandled(db, monkeypatch):
+    """Полный Dispatcher: /stats не становится резюме/навыками/запросом."""
+    from datetime import datetime, timezone
+    from unittest.mock import AsyncMock, patch
+    from aiogram import Bot, Dispatcher
+    from aiogram.types import Message, Chat, User, Update, MessageEntity
+    from bot.handlers import register_all_routers
+    from bot.middlewares import VisitCounterMiddleware
+    from bot.states import ResumeStates, MarketStandardsStates, SourceStates, ResourceSearchStates
+    from bot.services.visits import collect_visit_stats
+
+    monkeypatch.delenv('ADMIN_IDS', raising=False)
+    bot = Bot(token='123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk')
+    dp = Dispatcher()
+    dp['db'] = db
+    register_all_routers(dp)
+    dp.message.outer_middleware(VisitCounterMiddleware(db))
+    state = dp.fsm.get_context(bot=bot, chat_id=97531, user_id=97531)
+    states = [None, ResumeStates.waiting_for_resume, ResumeStates.waiting_for_role,
+              ResumeStates.waiting_for_skills, MarketStandardsStates.waiting_for_custom_standards,
+              SourceStates.waiting_for_source_url, ResourceSearchStates.waiting_for_query]
+
+    async def send(text, i):
+        msg = Message(message_id=i, date=datetime.now(timezone.utc),
+                      chat=Chat(id=97531, type='private'),
+                      from_user=User(id=97531, is_bot=False, first_name='Test'),
+                      text=text, entities=[MessageEntity(type='bot_command', offset=0, length=len(text))])
+        return await dp.feed_update(bot, Update(update_id=i, message=msg))
+
+    try:
+        for i, value in enumerate(states, 1):
+            await state.set_state(value)
+            with patch.object(Message, 'answer', new_callable=AsyncMock) as answer:
+                await send('/stats', i)
+                assert answer.await_count >= 1
+                assert 'Статистика посещаемости' in answer.call_args_list[0].args[0]
+            assert await state.get_state() == (value.state if value else None)
+        await state.clear()
+        before = (await collect_visit_stats(db))['events_today']
+        await send('/unknown_command_for_test', 100)
+        assert (await collect_visit_stats(db))['events_today'] == before + 1
+        assert await db.get_resume(97531) is None, '/stats не сохраняется как резюме'
+    finally:
+        await bot.session.close()
+        await dp.storage.close()
+
+
+@pytest.mark.asyncio
+async def test_stats_seven_day_average_independent_of_chart(db):
+    from bot.services.visits import record_event, collect_visit_stats
+    await record_event(db, 912345, action='test')
+    short = await collect_visit_stats(db, days=1)
+    long = await collect_visit_stats(db, days=14)
+    assert short['average_7'] == long['average_7']
+    assert short['average_7'] == pytest.approx(1 / 7)

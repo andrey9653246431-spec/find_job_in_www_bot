@@ -202,11 +202,11 @@ def check_startup_sequence() -> None:
             from bot.middlewares import VisitCounterMiddleware
 
             visit_counter = VisitCounterMiddleware(db=db)
-            dp.message.middleware(visit_counter)
-            dp.callback_query.middleware(visit_counter)
+            dp.message.outer_middleware(visit_counter)
+            dp.callback_query.outer_middleware(visit_counter)
             register_all_routers(dp)
-            assert len(list(dp.message.middleware)) > 0, "счётчик посещаемости не подключён"
-            assert len(list(dp.callback_query.middleware)) > 0, "счётчик посещаемости не подключён"
+            assert len(list(dp.message.outer_middleware)) > 0, "счётчик посещаемости не подключён"
+            assert len(list(dp.callback_query.outer_middleware)) > 0, "счётчик посещаемости не подключён"
             handlers = sum(len(router.message.handlers) for router in dp.sub_routers)
             callbacks = sum(len(router.callback_query.handlers) for router in dp.sub_routers)
 
