@@ -34,3 +34,187 @@ on:
     paths:
       - "bot/**"
       - "main.py"
+      - "requirements.txt"
+      - "check_bot_ready.py"
+
+permissions:
+  contents: write   # heartbeat-коммит + кэш БД
+  actions: write    # запуск следующей сессии (workflow_dispatch)
+
+concurrency:
+  group: telegram-bot-runner
+  # Не прерываем рабочую сессию: иначе schedule/push может оборвать запись БД.
+  # Следующий run ждёт завершения текущего; одновременно polling только один.
+  cancel-in-progress: false
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Restore SQLite database from cache
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: bot-sqlite-db-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            bot-sqlite-db-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Preflight check (BOT_TOKEN, БД, роутеры, getMe)
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        run: |
+          if [ -z "$BOT_TOKEN" ]; then
+            echo "::error::Секрет BOT_TOKEN не задан. Settings → Secrets and variables → Actions → New repository secret"
+            exit 1
+          fi
+          if [ -f check_bot_ready.py ]; then
+            python check_bot_ready.py --online
+          else
+            echo "::warning::check_bot_ready.py не найден в репозитории — выполняю резервную проверку токена через getMe."
+            RESPONSE=$(curl -s --max-time 20 "https://api.telegram.org/bot${BOT_TOKEN}/getMe")
+            echo "getMe → ${RESPONSE}"
+            echo "$RESPONSE" | grep -q '"ok":true' || {
+              echo "::error::Telegram отклонил BOT_TOKEN. Проверьте секрет (Settings → Secrets → Actions)."
+              exit 1
+            }
+            WEBHOOK=$(curl -s --max-time 20 "https://api.telegram.org/bot${BOT_TOKEN}/getWebhookInfo")
+            echo "getWebhookInfo → ${WEBHOOK}"
+            if echo "$WEBHOOK" | grep -q '"url":"http'; then
+              echo "::error::У бота установлен webhook — long polling не заработает. Удалите его: https://api.telegram.org/bot<TOKEN>/deleteWebhook?drop_pending_updates=true"
+              exit 1
+            fi
+          fi
+
+      - name: Run Telegram Bot with GitHub Secrets
+        id: bot
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL || 'https://api.groq.com/openai/v1' }}
+          LLM_MODEL: ${{ secrets.LLM_MODEL || 'llama-3.3-70b-versatile' }}
+          # Бесплатные провайдеры для адаптации резюме: достаточно одного ключа.
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL || 'gemini-2.5-flash' }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_MODEL: ${{ secrets.GROQ_MODEL || 'llama-3.3-70b-versatile' }}
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          CEREBRAS_MODEL: ${{ secrets.CEREBRAS_MODEL || 'gpt-oss-120b' }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          MISTRAL_MODEL: ${{ secrets.MISTRAL_MODEL || 'mistral-large-latest' }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_MODEL: ${{ secrets.OPENROUTER_MODEL || 'openrouter/free' }}
+          LLM_ORDER: ${{ secrets.LLM_ORDER }}
+          LLM_PROVIDER: ${{ secrets.LLM_PROVIDER }}
+          LLM_TIMEOUT: "75"
+          LLM_MAX_INPUT_CHARS: "16000"
+          PYTHONUNBUFFERED: "1"
+          DB_PATH: data/bot_database.sqlite3
+          HTTP_TIMEOUT: "15"
+          MAX_VACANCIES_PER_MESSAGE: "10"
+          # Сессия по умолчанию 120 мин, отдельный job ограничен 355 мин
+          BOT_MAX_RUNTIME_MINUTES: ${{ inputs.run_duration_minutes || '120' }}
+          BOT_RESTART_DELAY_SECONDS: "5"
+          BOT_MAX_RESTART_DELAY_SECONDS: "60"
+        run: |
+          if [ -z "$BOT_TOKEN" ]; then
+            echo "::error::Секрет BOT_TOKEN не задан: Settings → Secrets and variables → Actions → New repository secret"
+            echo "code=1" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          DURATION_MIN="${BOT_MAX_RUNTIME_MINUTES:-120}"
+          # Жёсткий предохранитель: 350 мин — заведомо меньше лимита job (355)
+          HARD_LIMIT_SEC=$(( 350 * 60 ))
+          echo "🤖 Сессия бота: ${DURATION_MIN} мин. (бот завершится сам и передаст эстафету)"
+          set +e
+          timeout --preserve-status --kill-after=20s "${HARD_LIMIT_SEC}s" python -u main.py
+          code=$?
+          set -e
+          echo "Код завершения сессии: $code"
+          if [ "$code" -eq 0 ] || [ "$code" -eq 124 ] || [ "$code" -eq 143 ]; then
+            echo "code=0" >> "$GITHUB_OUTPUT"
+            echo "⏱ Сессия завершена штатно — перезапускаю следующую."
+            exit 0
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "::error::Бот завершился с ошибкой (код $code). Смотрите лог выше."
+          exit "$code"
+
+      # Активность репозитория: не даёт GitHub отключить расписание после 60 дней простоя
+      - name: Heartbeat (расписание не отключается)
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          # Рабочий checkout может отставать на два часа. Создаём отдельное дерево
+          # от свежего main, не трогая рабочие файлы и БД бота.
+          git fetch origin main
+          HEARTBEAT_DIR=$(mktemp -d)
+          git worktree add --detach "$HEARTBEAT_DIR" origin/main
+          trap 'git worktree remove --force "$HEARTBEAT_DIR"' EXIT
+          TODAY=$(date -u +%Y-%m-%d)
+          for attempt in 1 2 3; do
+            git -C "$HEARTBEAT_DIR" fetch origin main
+            git -C "$HEARTBEAT_DIR" reset --hard origin/main
+            CURRENT=$(cut -d " " -f1 "$HEARTBEAT_DIR/.github/bot-heartbeat.txt" 2>/dev/null | head -n1 || true)
+            if [ "$CURRENT" = "$TODAY" ]; then
+              echo "Heartbeat за $TODAY уже есть."
+              exit 0
+            fi
+            mkdir -p "$HEARTBEAT_DIR/.github"
+            printf '%s — workflow %s\n' "$TODAY" "$GITHUB_RUN_ID" > "$HEARTBEAT_DIR/.github/bot-heartbeat.txt"
+            git -C "$HEARTBEAT_DIR" config user.name "github-actions[bot]"
+            git -C "$HEARTBEAT_DIR" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git -C "$HEARTBEAT_DIR" add .github/bot-heartbeat.txt
+            git -C "$HEARTBEAT_DIR" commit -m "chore: bot heartbeat $TODAY"
+            if git -C "$HEARTBEAT_DIR" push origin HEAD:main; then exit 0; fi
+            sleep 3
+          done
+          echo "::error::Heartbeat не записан: проверьте права push и защиту main."
+          exit 1
+
+      - name: Save SQLite database to cache
+        if: always() && hashFiles('data/**') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: data
+          key: bot-sqlite-db-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # Главное: следующая сессия запускается сама, без участия человека.
+      # Шаг идёт ПОСЛЕ сохранения БД в кэш: запуск нового рана вытесняет текущий.
+      - name: Restart next session (auto-restart)
+        if: always() && !cancelled() && steps.bot.outcome != 'skipped'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Пауза не даёт создавать слишком частые запуски при постоянной ошибке.
+          sleep 60
+          echo "🔁 Запускаю следующую сессию бота…"
+          RESPONSE=$(curl --retry 3 --retry-delay 5 --connect-timeout 15 --max-time 60 -sS -w "\nHTTP:%{http_code}" -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/run_bot.yml/dispatches" \
+            -d '{"ref":"main"}')
+          echo "$RESPONSE"
+          if echo "$RESPONSE" | grep -q "HTTP:204"; then
+            echo "✅ Следующая сессия поставлена в очередь (GitHub запустит её сразу после этой)."
+          else
+            echo "::warning::Не удалось запустить следующую сессию — её поднимет расписание (каждые 6 часов)."
+          fi
