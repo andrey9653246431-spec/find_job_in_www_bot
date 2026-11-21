@@ -3388,3 +3388,49 @@ def test_bot_workflow_has_auto_restart() -> None:
 
     bot_env = next(step for step in job["steps"] if step.get("id") == "bot")["env"]
     assert "BOT_MAX_RUNTIME_MINUTES" in bot_env
+
+
+@pytest.mark.asyncio
+async def test_runtime_gracefully_stops_real_dispatcher(monkeypatch):
+    """Настоящий Dispatcher: после лимита не остаётся фонового polling."""
+    import asyncio
+    import logging
+    import main as entrypoint
+    from aiogram import Bot, Dispatcher
+    from bot.services.runtime import PollingPlan
+
+    bot = Bot(token="123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk")
+    dp = Dispatcher()
+    started = asyncio.Event()
+    finished = asyncio.Event()
+
+    async def fake_polling(**kwargs):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(dp, "_polling", fake_polling)
+    monkeypatch.setattr(entrypoint, "session_expired", lambda *args: started.is_set())
+    try:
+        await asyncio.wait_for(entrypoint.run_polling_with_restarts(
+            bot, dp, PollingPlan(), logging.getLogger("test-graceful")
+        ), timeout=5)
+        assert finished.is_set(), "Внутренняя задача polling должна завершиться"
+        assert not dp._running_lock.locked()
+    finally:
+        await bot.session.close()
+
+
+def test_workflow_does_not_interrupt_database_save():
+    from pathlib import Path
+    import yaml
+    wf = yaml.safe_load(Path('.github/workflows/run_bot.yml').read_text())
+    assert wf['concurrency']['cancel-in-progress'] is False
+    steps = wf['jobs']['run-bot']['steps']
+    saves = [step for step in steps if step.get('uses') == 'actions/cache/save@v4']
+    assert 'github.run_attempt' in saves[0]['with']['key']
+    heartbeat = next(step for step in steps if step['name'].startswith('Heartbeat'))
+    assert 'git worktree add' in heartbeat['run']
+    assert 'HEAD:main' in heartbeat['run']

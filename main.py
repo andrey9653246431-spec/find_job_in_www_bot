@@ -127,7 +127,13 @@ async def run_polling_with_restarts(
     finally:
         if polling_task is not None:
             if not polling_task.done():
-                polling_task.cancel()
+                # Штатная остановка завершает внутренние задачи aiogram.
+                # Простая cancel(start_polling) может оставить getUpdates в фоне.
+                try:
+                    await asyncio.wait_for(dp.stop_polling(), timeout=10)
+                    await asyncio.wait_for(asyncio.shield(polling_task), timeout=5)
+                except (asyncio.TimeoutError, RuntimeError, AttributeError):
+                    polling_task.cancel()
             await asyncio.gather(polling_task, return_exceptions=True)
         for sig, handler in previous.items():
             loop.remove_signal_handler(sig)
