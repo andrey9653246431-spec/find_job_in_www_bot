@@ -1,6 +1,13 @@
-"""Точка входа Telegram-бота для формирования резюме и поиска работы."""
+"""Точка входа Telegram-бота для формирования резюме и поиска работы.
+
+Запуск рассчитан на GitHub Actions: бот работает сессией (по умолчанию 330 мин),
+сам поднимается после падений и по расписанию/по цепочке перезапусков
+поднимается следующая сессия. Подробности — в `bot/services/runtime.py`.
+"""
 import asyncio
+from datetime import datetime, timezone
 import logging
+import signal
 import sys
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -9,6 +16,13 @@ from bot.config import adapt_resume_ui_enabled, config, ideal_resume_ui_enabled
 from bot.database import Database
 from bot.handlers import register_all_routers
 from bot.middlewares import VisitCounterMiddleware
+from bot.services.runtime import (
+    PollingPlan,
+    next_restart_delay,
+    polling_plan,
+    session_expired,
+    session_summary,
+)
 from bot.config import raw_resume_storage_enabled
 from bot.services.file_extractor import (
     purge_stored_resume_texts,
@@ -54,6 +68,70 @@ async def setup_bot_commands(bot: Bot) -> None:
             ),
         ]
     await bot.set_my_commands(commands)
+
+
+async def run_polling_with_restarts(
+    bot: Bot,
+    dp: Dispatcher,
+    plan: PollingPlan,
+    logger: logging.Logger,
+) -> None:
+    """Держит бота в polling: сам поднимается после сбоев и завершает сессию по таймеру.
+
+    Почему так:
+    - одна сессия ограничена ``plan.max_runtime_minutes`` (по умолчанию 330 мин при
+      лимите GitHub Actions 360 мин на job) — сессия завершается сама, до того как
+      раннер убьёт процесс, и workflow успевает запустить следующую;
+    - любое падение polling (сеть, `409 Conflict`, `TelegramNetworkError`) не убивает
+      бота: пауза 5 → 10 → 20 → … → 60 секунд и повторный запуск;
+    - SIGTERM/SIGINT (остановка workflow, `timeout`, отмена рана) отрабатываются
+      как штатное завершение.
+    """
+    started_at = datetime.now(timezone.utc)
+    stop_requested = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    previous = {}
+    polling_task = None
+    restarts = 0
+    try:
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                previous[sig] = signal.getsignal(sig)
+                loop.add_signal_handler(sig, stop_requested.set)
+            except (NotImplementedError, RuntimeError, ValueError):
+                previous.pop(sig, None)
+        while not stop_requested.is_set():
+            if session_expired(started_at, datetime.now(timezone.utc), plan):
+                logger.info(session_summary(started_at, datetime.now(timezone.utc), plan, restarts))
+                return
+            # Сессию HTTP закрывает main(), а не каждая попытка polling.
+            polling_task = asyncio.create_task(dp.start_polling(
+                bot, handle_signals=False, close_bot_session=False,
+            ))
+            while not polling_task.done():
+                await asyncio.wait({polling_task}, timeout=1)
+                if stop_requested.is_set() or session_expired(
+                    started_at, datetime.now(timezone.utc), plan
+                ):
+                    return
+            if polling_task.cancelled():
+                return
+            error = polling_task.exception()
+            restarts += 1
+            delay = next_restart_delay(restarts, plan)
+            logger.warning("Polling завершён (%r). Повтор №%d через %d с", error, restarts, delay)
+            try:
+                await asyncio.wait_for(stop_requested.wait(), timeout=delay)
+            except asyncio.TimeoutError:
+                pass
+    finally:
+        if polling_task is not None:
+            if not polling_task.done():
+                polling_task.cancel()
+            await asyncio.gather(polling_task, return_exceptions=True)
+        for sig, handler in previous.items():
+            loop.remove_signal_handler(sig)
+            signal.signal(sig, handler)
 
 
 async def main() -> None:
@@ -152,9 +230,13 @@ async def main() -> None:
     except Exception as exc:  # noqa: BLE001
         logger.warning("Не удалось определить LLM-провайдеров: %s", exc)
 
-    logger.info("Бот успешно запущен и ожидает сообщений...")
+    plan = polling_plan()
+    logger.info(
+        "Бот успешно запущен: сессия до %d мин., автоперезапуск после сбоев включён",
+        plan.max_runtime_minutes,
+    )
     try:
-        await dp.start_polling(bot)
+        await run_polling_with_restarts(bot=bot, dp=dp, plan=plan, logger=logger)
     finally:
         await bot.session.close()
 

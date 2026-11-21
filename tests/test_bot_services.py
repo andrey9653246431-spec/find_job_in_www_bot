@@ -3238,3 +3238,153 @@ async def test_adaptation_and_reset_explain_missing_text(monkeypatch, db: Databa
     await cmd_reset_profile(message, db)
     assert "не хранится" in message.sent[-1][0]
     assert "/set_role" in message.sent[-1][0]
+
+
+# =============================================================================
+# Непрерывная работа: автоперезапуск сессий бота (GitHub Actions)
+# =============================================================================
+
+def test_polling_plan_limits(monkeypatch) -> None:
+    """Тест 86: сессия ограничена лимитом GitHub Actions (6 ч) и настраивается из env."""
+    from bot.services.runtime import GITHUB_JOB_LIMIT_MINUTES, polling_plan
+
+    monkeypatch.delenv("BOT_MAX_RUNTIME_MINUTES", raising=False)
+    plan = polling_plan()
+    assert plan.max_runtime_minutes == 330, "по умолчанию 330 мин при лимите 360"
+    assert plan.max_runtime_minutes < GITHUB_JOB_LIMIT_MINUTES
+
+    monkeypatch.setenv("BOT_MAX_RUNTIME_MINUTES", "120")
+    assert polling_plan().max_runtime_minutes == 120
+
+    # Слишком большое значение подрезается под лимит GitHub, слишком маленькое — до 5 мин
+    monkeypatch.setenv("BOT_MAX_RUNTIME_MINUTES", "9999")
+    assert polling_plan().max_runtime_minutes == GITHUB_JOB_LIMIT_MINUTES - 10
+    monkeypatch.setenv("BOT_MAX_RUNTIME_MINUTES", "1")
+    assert polling_plan().max_runtime_minutes == 5
+    monkeypatch.setenv("BOT_MAX_RUNTIME_MINUTES", "не число")
+    assert polling_plan().max_runtime_minutes == 330
+
+
+def test_restart_backoff_and_session_expiry() -> None:
+    """Тест 87: пауза между перезапусками растёт и упирается в потолок; сессия истекает по времени."""
+    from datetime import datetime, timedelta, timezone
+
+    from bot.services.runtime import (
+        PollingPlan,
+        next_restart_delay,
+        session_expired,
+        session_summary,
+    )
+
+    plan = PollingPlan(max_runtime_minutes=120, restart_delay_seconds=5, max_restart_delay_seconds=60)
+    delays = [next_restart_delay(attempt, plan) for attempt in range(1, 8)]
+    assert delays == [5, 10, 20, 40, 60, 60, 60]
+
+    started = datetime(2026, 11, 18, 12, 0, tzinfo=timezone.utc)
+    assert session_expired(started, started + timedelta(minutes=119), plan) is False
+    assert session_expired(started, started + timedelta(minutes=120), plan) is True
+
+    summary = session_summary(started, started + timedelta(minutes=120), plan, restarts=2)
+    assert "120 мин" in summary and "перезапусков после сбоев: 2" in summary
+    assert "Следующая сессия запускается автоматически" in summary
+
+
+@pytest.mark.asyncio
+async def test_polling_restarts_after_crash() -> None:
+    """Тест 88: падение polling не убивает бота — он поднимается снова."""
+    import logging
+
+    import asyncio
+    import main as entrypoint
+    from bot.services.runtime import PollingPlan
+
+    class FakeDP:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def start_polling(self, bot, handle_signals=True, **kwargs):  # noqa: ARG002
+            assert kwargs.get("close_bot_session") is False
+            assert handle_signals is False
+            self.calls += 1
+            if self.calls <= 2:
+                raise RuntimeError("TelegramNetworkError: connection reset")
+            raise asyncio.CancelledError()
+
+    dp = FakeDP()
+    plan = PollingPlan(max_runtime_minutes=60, restart_delay_seconds=1, max_restart_delay_seconds=1)
+    await entrypoint.run_polling_with_restarts(
+        bot=object(), dp=dp, plan=plan, logger=logging.getLogger("test-runtime")
+    )
+    assert dp.calls == 3, "две попытки упали, третья завершилась штатно"
+
+
+@pytest.mark.asyncio
+async def test_polling_stops_when_session_time_is_up(monkeypatch) -> None:
+    """Тест 89: по истечении времени сессии polling останавливается для перезапуска раннера."""
+    import asyncio
+    import logging
+
+    import main as entrypoint
+    from bot.services.runtime import PollingPlan
+
+    class HangingDP:
+        def __init__(self) -> None:
+            self.cancelled = False
+
+        async def start_polling(self, bot, handle_signals=True, **kwargs):  # noqa: ARG002
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+
+    dp = HangingDP()
+    # первая проверка «на входе» — ещё не истекла, дальше внутри цикла — истекла
+    calls = {"n": 0}
+
+    def fake_expired(started_at, now, plan):
+        calls["n"] += 1
+        return calls["n"] > 1
+
+    monkeypatch.setattr(entrypoint, "session_expired", fake_expired)
+
+    await asyncio.wait_for(
+        entrypoint.run_polling_with_restarts(
+            bot=object(),
+            dp=dp,
+            plan=PollingPlan(max_runtime_minutes=1),
+            logger=logging.getLogger("test-runtime"),
+        ),
+        timeout=10,
+    )
+    assert dp.cancelled is True, "polling остановлен, чтобы уступить место новой сессии"
+
+
+def test_bot_workflow_has_auto_restart() -> None:
+    """Тест 90: в workflow включены расписание, self-dispatch, heartbeat и лимит времени."""
+    from pathlib import Path
+
+    import yaml
+
+    workflow = yaml.safe_load(
+        Path(".github/workflows/run_bot.yml").read_text(encoding="utf-8")
+    )
+    triggers = workflow.get("on", workflow.get(True))
+    assert "schedule" in triggers, "расписание должно быть включено (раньше было закомментировано)"
+    assert "*/6" in triggers["schedule"][0]["cron"]
+    assert workflow["permissions"]["actions"] == "write", "нужно право на перезапуск workflow"
+
+    job = workflow["jobs"]["run-bot"]
+    assert job["timeout-minutes"] <= 360, "лимит GitHub на job — 6 часов"
+    assert job["timeout-minutes"] < 360
+
+    names = [step["name"] for step in job["steps"]]
+    assert any("Restart next session" in name for name in names), "должен быть self re-dispatch"
+    assert any("Heartbeat" in name for name in names), "heartbeat не даёт отключить расписание"
+
+    restart_index = next(i for i, n in enumerate(names) if "Restart next session" in n)
+    cache_index = next(i for i, n in enumerate(names) if "Save SQLite" in n)
+    assert cache_index < restart_index, "БД сохраняется в кэш ДО перезапуска, иначе потеряется"
+
+    bot_env = next(step for step in job["steps"] if step.get("id") == "bot")["env"]
+    assert "BOT_MAX_RUNTIME_MINUTES" in bot_env

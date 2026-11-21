@@ -660,3 +660,12 @@ git push -u origin main
 ```
 
 После пуша на вкладке **[Actions](https://github.com/andrey9653246431-spec/find_job_in_www_bot/actions)** в вашем репозитории GitHub автоматически запустится бесплатный workflow `Python CI`, который проверит все тесты бота.
+
+## Автоперезапуск и работа без входа в GitHub
+
+См. **[AUTORESTART_SETUP.md](AUTORESTART_SETUP.md)**: установка требует отдельно
+обновить `.github/workflows/run_bot.yml` через веб-редактор — Unpack не может
+закоммитить workflow. Сессии Actions 120 мин, повтор после сбоев, self-dispatch,
+резервное расписание каждые 6 часов, ежедневный heartbeat. Входить раз в 30 дней
+не требуется; ограничение schedule — 60 дней без активности репозитория.
+Это best-effort запуск, не гарантия 24/7; для постоянной службы нужен VPS.
