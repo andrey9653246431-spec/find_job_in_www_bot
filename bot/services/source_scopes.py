@@ -41,6 +41,7 @@ SCOPE_SHORT_LABELS: Dict[str, str] = {
 # Агрегаторы и борды: даже если в домене есть «career»/«job» (career.habr.com,
 # budu.jobs), это НЕ карьерная страница одной компании, а агрегатор вакансий.
 AGGREGATOR_HOSTS = (
+    "recruitmaster.net",
     "hh.ru",
     "trudvsem.ru",
     "career.habr.com",

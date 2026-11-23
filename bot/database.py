@@ -249,6 +249,14 @@ DEFAULT_SOURCES: List[Dict[str, str]] = [
         "source_type": "tg_channel",
         "title": "TG: JOBнулся. О работе и карьере. Как есть (@jobnulsya)",
     },
+    # Публичный каталог Recruit Master: даты публикации в списке не указаны.
+    # Показываем ссылку вручную, не выдаём старые вакансии за найденные за период.
+    {
+        "canonical_url": "https://recruitmaster.net/jobs",
+        "parse_url": "https://recruitmaster.net/jobs",
+        "source_type": "manual",
+        "title": "Сайт: Recruit Master (recruitmaster.net, вакансии)",
+    },
     # --- Международные job-борды (проверено 18.11.2026) ---
     # Автопарсинг возможен: RemoteOK (JSON API), We Work Remotely и Jobspresso (RSS)
     {

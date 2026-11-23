@@ -1119,12 +1119,15 @@ def _format_manual_boards(
         "━━━━━━━━━━━━━━━━━━━━",
         "🌍 **Международные job-борды и площадки для ручного поиска:**",
         "_Эти площадки закрыты для автопарсинга (Cloudflare/403) или отдают вакансии "
-        "только через JavaScript. Ссылки подставлены под ваш профиль:_",
+        "только через JavaScript, либо не позволяют проверить дату публикации. "
+        "Где возможно, ссылки подставлены под ваш профиль:_",
     ]
     for board in manual_sources[:limit]:
         name = escape_markdown(board["title"].replace("Сайт: ", "").split(" (")[0])
         url, has_query = build_manual_board_link(board["url"], role, period_days)
         hint = "" if has_query else " _(введите должность в строке поиска)_"
+        if url == "https://recruitmaster.net/jobs":
+            hint = " _(каталог вакансий; даты публикации не указаны)_"
         lines.append(f"• **{name}** — [открыть поиск]({url}){hint}")
     if len(manual_sources) > limit:
         lines.append(

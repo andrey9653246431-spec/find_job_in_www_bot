@@ -910,7 +910,7 @@ async def test_tgstat_channels_added(db: Database) -> None:
     # Всего источников: 9 базовых + 13 + 9 международных + 22 из TGStat
     # + 24 из второй подборки + 70 каналов и 16 сайтов третьей подборки
     # + 6 карьерных страниц компаний (source_type="career")
-    assert len(DEFAULT_SOURCES) == 169
+    assert len(DEFAULT_SOURCES) == 170
     # Повторный досев ничего не дублирует
     assert await db.ensure_default_sources() == 0
 
@@ -1033,7 +1033,7 @@ async def test_second_batch_channels_added(db: Database) -> None:
 
 
 def test_sources_total_and_uniqueness() -> None:
-    """Тест 20: 169 источников, все уникальны; 135 каналов, 28 сайтов, 6 карьерных страниц."""
+    """Тест 20: 170 источников, все уникальны; 135 каналов, 29 сайтов, 6 карьерных страниц."""
     from bot.database import DEFAULT_SOURCES
     from bot.services.resource_catalog import TELEGRAM_CHANNELS
 
@@ -1042,8 +1042,8 @@ def test_sources_total_and_uniqueness() -> None:
     sites = [
         s for s in DEFAULT_SOURCES if s["source_type"] not in ("tg_channel", "career")
     ]
-    assert (len(tg), len(sites), len(career), len(DEFAULT_SOURCES)) == (135, 28, 6, 169)
-    assert len({s["canonical_url"] for s in DEFAULT_SOURCES}) == 169
+    assert (len(tg), len(sites), len(career), len(DEFAULT_SOURCES)) == (135, 29, 6, 170)
+    assert len({s["canonical_url"] for s in DEFAULT_SOURCES}) == 170
     assert len({c["username"] for c in TELEGRAM_CHANNELS}) == len(TELEGRAM_CHANNELS)
 
 
@@ -2561,7 +2561,7 @@ def test_source_scopes_classification_and_filtering() -> None:
     ) == SCOPE_CAREER
 
     counts = count_sources_by_scope(DEFAULT_SOURCES)
-    assert counts[SCOPE_ALL] == len(DEFAULT_SOURCES) == 169
+    assert counts[SCOPE_ALL] == len(DEFAULT_SOURCES) == 170
     assert counts[SCOPE_TELEGRAM] == 135
     assert counts[SCOPE_CAREER] == 6
     assert counts[SCOPE_TELEGRAM] + counts[SCOPE_WEB] + counts[SCOPE_CAREER] == counts[SCOPE_ALL]
@@ -3492,3 +3492,21 @@ async def test_stats_seven_day_average_independent_of_chart(db):
     long = await collect_visit_stats(db, days=14)
     assert short['average_7'] == long['average_7']
     assert short['average_7'] == pytest.approx(1 / 7)
+
+
+@pytest.mark.asyncio
+async def test_recruitmaster_added_to_sources_and_catalog(db):
+    from bot.database import DEFAULT_SOURCES
+    from bot.services.resource_catalog import AGGREGATORS
+    from bot.services.source_scopes import classify_source_scope
+    from bot.services.vacancy_parser import build_manual_board_link
+    url = 'https://recruitmaster.net/jobs'
+    entry = next(s for s in DEFAULT_SOURCES if s['canonical_url'] == url)
+    assert entry['source_type'] == 'manual', 'Без дат нельзя обещать фильтр за период'
+    assert classify_source_scope(entry) == 'web'
+    assert build_manual_board_link(url, 'Финансовый менеджер', 7) == (url, False)
+    assert any(s['url'] == url and s['verified'] for s in AGGREGATORS)
+    await db.ensure_default_sources()
+    await db.ensure_default_sources()
+    rows = await db.list_sources(active_only=True)
+    assert len([s for s in rows if s['canonical_url'] == url]) == 1

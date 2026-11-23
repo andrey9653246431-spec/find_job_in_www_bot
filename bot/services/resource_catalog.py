@@ -55,6 +55,14 @@ def hh_company_vacancies_url(company_name: str) -> str:
 # 1. САЙТЫ-АГРЕГАТОРЫ И JOB-БОРДЫ
 # =============================================================================
 AGGREGATORS: List[Dict[str, Any]] = [
+    {
+        "name": "Recruit Master",
+        "url": "https://recruitmaster.net/jobs",
+        "description": "Публичные вакансии рекрутеров. Ручной просмотр: даты публикации в каталоге не указаны.",
+        "topics": ("finance", "sales", "office", "any"),
+        "verified": True,
+        "manual_search": True,
+    },
     # --- Международные и remote-борды ---
     {
         "name": "Indeed",
